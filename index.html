@@ -536,10 +536,10 @@ input{width:85%;padding:12px;margin:15px 0;background:#111;border:1px solid #444
 
 <div id="nameInputModal">
   <div class="modal-content">
-    <h3 style="margin-top:0">HOŞ GELDİN TRADER</h3>
-    <p style="font-size:13px;color:#aaa;">Piyasada tanınacağın ismini gir:</p>
+    <h3 style="margin-top:0" id="nameModalTitle">HOŞ GELDİN TRADER</h3>
+    <p style="font-size:13px;color:#aaa;" id="nameModalDesc">Piyasada tanınacağın ismini gir:</p>
     <input type="text" id="playerNameInput" placeholder="İsminiz (Maks 30 Karakter)" maxlength="30">
-    <button class="buy" onclick="confirmNameAndStart()" style="width:100%;padding:15px;">PİYASAYA GİR</button>
+    <button class="buy" onclick="confirmNameAndStart()" style="width:100%;padding:15px;" id="nameModalBtn">PİYASAYA GİR</button>
   </div>
 </div>
 
@@ -2164,6 +2164,15 @@ function setSplashLang(lang) {
 }
 
 function applyLang(){
+  // Name modal çevirisi
+  const nameTitle = document.getElementById('nameModalTitle');
+  const nameDesc  = document.getElementById('nameModalDesc');
+  const nameBtn   = document.getElementById('nameModalBtn');
+  const nameInput = document.getElementById('playerNameInput');
+  if (nameTitle) nameTitle.innerText = L('HOŞ GELDİN TRADER', 'WELCOME TRADER');
+  if (nameDesc)  nameDesc.innerText  = L('Piyasada tanınacağın ismini gir:', 'Enter your name for the market:');
+  if (nameBtn)   nameBtn.innerText   = L('PİYASAYA GİR', 'ENTER THE MARKET');
+  if (nameInput) nameInput.placeholder = L('İsminiz (Maks 30 Karakter)', 'Your name (Max 30 chars)');
   // Online sayısı — sabit "Online" yazısı, dil değişimi gereksiz
   // Install banner çevirisi
   const ibTitle=document.getElementById('ib-title');

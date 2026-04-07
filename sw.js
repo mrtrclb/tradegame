@@ -1,4 +1,4 @@
-const CACHE = 'tradegame-v4';
+const CACHE = 'tradegame-v3';
 
 self.addEventListener('install', e => {
   e.waitUntil(
