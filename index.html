@@ -523,7 +523,11 @@ input{width:85%;padding:12px;margin:15px 0;background:#111;border:1px solid #444
   <div class="splash-content">
     <h1 class="game-title" style="font-size:42px;margin-bottom:6px;">TRADE GAME</h1>
     <div class="version-tag">v1.5.26</div>
-    <p class="splash-desc">Finans dünyasının kapıları senin için aralanıyor! Stratejini belirle, piyasanın ritmini yakala ve sıfırdan bir imparatorluk kur. 📈💰</p>
+    <p class="splash-desc" id="splashDesc">Finans dünyasının kapıları senin için aralanıyor! Stratejini belirle, piyasanın ritmini yakala ve sıfırdan bir imparatorluk kur. 📈💰</p>
+    <div style="display:flex;gap:8px;justify-content:center;margin-bottom:16px;">
+      <button id="splash-lang-tr" onclick="setSplashLang('tr')" style="padding:5px 18px;font-size:12px;font-weight:600;letter-spacing:0.1em;background:#1a2a1a;color:#2ecc71;border:1px solid #2ecc71;cursor:pointer;transition:all 0.15s;">TR</button>
+      <button id="splash-lang-en" onclick="setSplashLang('en')" style="padding:5px 18px;font-size:12px;font-weight:600;letter-spacing:0.1em;background:transparent;color:rgba(255,255,255,0.3);border:1px solid rgba(255,255,255,0.2);cursor:pointer;transition:all 0.15s;">EN</button>
+    </div>
     <div id="splashButtons">
       <!-- JS tarafından doldurulacak -->
     </div>
@@ -2147,6 +2151,18 @@ function applyMillionaireSetting(){
   }
 }
 
+function setSplashLang(lang) {
+  langEN = (lang === 'en');
+  const trBtn = document.getElementById('splash-lang-tr');
+  const enBtn = document.getElementById('splash-lang-en');
+  const desc  = document.getElementById('splashDesc');
+  if (trBtn) { trBtn.style.background = langEN ? 'transparent' : '#1a2a1a'; trBtn.style.color = langEN ? 'rgba(255,255,255,0.3)' : '#2ecc71'; trBtn.style.borderColor = langEN ? 'rgba(255,255,255,0.2)' : '#2ecc71'; }
+  if (enBtn) { enBtn.style.background = langEN ? '#1a2a1a' : 'transparent'; enBtn.style.color = langEN ? '#2ecc71' : 'rgba(255,255,255,0.3)'; enBtn.style.borderColor = langEN ? '#2ecc71' : 'rgba(255,255,255,0.2)'; }
+  if (desc)  desc.innerText = langEN ? 'The doors of the financial world are opening for you! Set your strategy, catch the market rhythm and build an empire from scratch. 📈💰' : 'Finans dünyasının kapıları senin için aralanıyor! Stratejini belirle, piyasanın ritmini yakala ve sıfırdan bir imparatorluk kur. 📈💰';
+  applyLang();
+  initSplash();
+}
+
 function applyLang(){
   // Online sayısı — sabit "Online" yazısı, dil değişimi gereksiz
   // Install banner çevirisi
@@ -2521,7 +2537,7 @@ function spinWheel(){
 }
 
 function shareGame(){
-  const url='https://trade001.netlify.app';
+  const url='https://tradegame.net';
   const text=L('Trade Game oynuyorum! Sen de dene: ',"I'm playing Trade Game! Try it: ");
   if(navigator.share){
     navigator.share({title:'Trade Game',text:text,url:url}).catch(()=>{});
@@ -2801,26 +2817,31 @@ function continueGame(){
 // SPLASH BAŞLANGIÇ — kayıt varsa devam butonu göster
 // ═══════════════════════════════════════════════════════
 function initSplash(){
+  // Kaydedilmiş dil varsa uygula
+  const saved = localStorage.getItem('tgSave');
+  if (saved) {
+    try { const s = JSON.parse(saved); if (s.langEN) setSplashLang('en'); } catch(e){}
+  }
   const btn=document.getElementById('splashButtons');
   console.log('initSplash — kayıt var mı:', hasSave(), '| localStorage:', localStorage.getItem('tgSave')?.substring(0,50));
   if(hasSave()){
     const info=getSaveInfo();
     const modeLabel=info.mode==='💰 Milyoner'?'💰 Milyoner':info.mode==='♾️ Sınırsız'?'♾️ Sınırsız':'Normal';
     btn.innerHTML=`
-      <button class="btn-continue" onclick="continueGame()">⏵ DEVAM ET</button>
+      <button class="btn-continue" onclick="continueGame()">⏵ ${L('DEVAM ET','CONTINUE')}</button>
       <div class="save-badge">
         <span>👤 <b>${info.name}</b></span>
-        <span>📅 <b>${info.day}. gün</b></span>
+        <span>📅 <b>${L(info.day+'. gün', 'Day '+info.day)}</b></span>
         <span>💰 <b>${Math.floor(info.money).toLocaleString('tr-TR')}₺</b></span>
         <span>${modeLabel}</span>
       </div>
       <hr class="splash-divider">
-      <button class="btn-newgame" onclick="showNamePopup()">▶ Yeni Oyun</button>
-      <button class="btn-newgame" onclick="openLeaderboard()" style="margin-top:6px;border-color:#f1c40f33;color:#f1c40f88;">🏆 En İyi Skorlarım</button>`;
+      <button class="btn-newgame" onclick="showNamePopup()">▶ ${L('Yeni Oyun','New Game')}</button>
+      <button class="btn-newgame" onclick="openLeaderboard()" style="margin-top:6px;border-color:#f1c40f33;color:#f1c40f88;">🏆 ${L('En İyi Skorlarım','My Best Scores')}</button>`;
   } else {
     btn.innerHTML=`
-      <button class="btn-continue" onclick="showNamePopup()" style="background:linear-gradient(135deg,#2980b9,#3498db);">▶ OYUNA BAŞLA</button>
-      <button class="btn-newgame" onclick="openLeaderboard()" style="margin-top:10px;border-color:#f1c40f33;color:#f1c40f88;">🏆 En İyi Skorlarım</button>`;
+      <button class="btn-continue" onclick="showNamePopup()" style="background:linear-gradient(135deg,#2980b9,#3498db);">▶ ${L('OYUNA BAŞLA','START GAME')}</button>
+      <button class="btn-newgame" onclick="openLeaderboard()" style="margin-top:10px;border-color:#f1c40f33;color:#f1c40f88;">🏆 ${L('En İyi Skorlarım','My Best Scores')}</button>`;
   }
 }
 
