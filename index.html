@@ -1,0 +1,2931 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Trade Game">
+<link rel="manifest" id="manifestLink">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23111'/><text y='.9em' font-size='75' x='10'>📈</text></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23111'/><text y='.9em' font-size='75' x='10'>📈</text></svg>">
+<title>Trade Game - Master Edition</title>
+<script type="module">
+// ═══════════════════════════════════════════════════════
+// FİREBASE — Leaderboard & Online Sayısı
+// ═══════════════════════════════════════════════════════
+import{initializeApp}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import{getFirestore,collection,addDoc,getDocs,query,orderBy,limit,where,doc,setDoc,deleteDoc,serverTimestamp,onSnapshot}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const fbConfig={
+  apiKey:"AIzaSyAVHnh6UuDwKJM7xqu9DUT4e3c0aWxgF0U",
+  authDomain:"trade-game-001.firebaseapp.com",
+  projectId:"trade-game-001",
+  storageBucket:"trade-game-001.firebasestorage.app",
+  messagingSenderId:"157917885641",
+  appId:"1:157917885641:web:ffbb79f2e9e5b799928918"
+};
+const fbApp=initializeApp(fbConfig);
+const db=getFirestore(fbApp);
+
+// Benzersiz oturum ID
+const SESSION_ID='sess_'+Math.random().toString(36).substr(2,9)+Date.now();
+
+// Cihaza özgü kalıcı ID — localStorage'da saklanır
+function getDeviceId(){
+  try{
+    let did=localStorage.getItem('tgDeviceId');
+    if(!did){did='dev_'+Math.random().toString(36).substr(2,12)+Date.now();localStorage.setItem('tgDeviceId',did);}
+    return did;
+  }catch(e){return 'dev_unknown';}
+}
+const DEVICE_ID=getDeviceId();
+
+// ── Online sayısı (şişirilmiş) ──────────────────────────────────────────
+async function updatePresence(){
+  try{
+    await setDoc(doc(db,'presence',SESSION_ID),{t:serverTimestamp()});
+  }catch(e){}
+}
+async function cleanOldPresence(){
+  try{
+    const snap=await getDocs(collection(db,'presence'));
+    const now=Date.now();
+    snap.forEach(async d=>{
+      const t=d.data().t;
+      if(t&&(now-t.toMillis())>120000) await deleteDoc(doc(db,'presence',d.id));
+    });
+  }catch(e){}
+}
+function updateOnlineUI(realCount){
+  const numEl=document.getElementById('onlineNum');
+  if(numEl) numEl.innerText=realCount;
+}
+// Online/offline durumuna göre sayacı göster/gizle
+function handleOnlineStatus(){
+  const el=document.getElementById('onlineCount');
+  if(!el)return;
+  if(navigator.onLine){
+    el.style.display='flex';
+  } else {
+    el.style.display='none';
+  }
+}
+
+// Presence listener
+function startPresence(){
+  handleOnlineStatus();
+  window.addEventListener('online', ()=>{
+    handleOnlineStatus();
+    updatePresence();
+    window.fbFlushPending();
+  });
+  window.addEventListener('offline', ()=>handleOnlineStatus());
+  if(!navigator.onLine)return;
+  updatePresence();
+  setInterval(updatePresence,60000);
+  setInterval(cleanOldPresence,90000);
+  try{
+    onSnapshot(collection(db,'presence'),snap=>{
+      updateOnlineUI(snap.size);
+    });
+  }catch(e){}
+}
+
+// ── Liderlik tablosu ────────────────────────────────────────────────────
+window.fbSubmitScore=async function(scoreData){
+  try{
+    await addDoc(collection(db,'leaderboard'),{
+      name:scoreData.name,
+      money:scoreData.money,
+      day:scoreData.day,
+      mode:scoreData.mode,
+      deviceId:DEVICE_ID,
+      t:serverTimestamp()
+    });
+    console.log('Skor gönderildi ✅');
+  }catch(e){
+    // İnternet yoksa pending queue'ya ekle
+    let q=JSON.parse(localStorage.getItem('tgPendingScore')||'[]');
+    q.push(scoreData);
+    localStorage.setItem('tgPendingScore',JSON.stringify(q));
+    console.log('Skor kuyruğa eklendi (offline)');
+  }
+};
+
+// Bekleyen skorları gönder (internet gelince)
+window.fbSendFeedback=async function(data){
+  await addDoc(collection(db,'feedback'),{
+    player:data.player||'?',
+    msg:data.msg,
+    day:data.day||0,
+    mode:data.mode||'Normal',
+    t:serverTimestamp()
+  });
+};
+
+window.fbFlushPending=async function(){
+  try{
+    const q=JSON.parse(localStorage.getItem('tgPendingScore')||'[]');
+    if(q.length===0)return;
+    for(const s of q) await window.fbSubmitScore(s);
+    localStorage.removeItem('tgPendingScore');
+  }catch(e){}
+};
+
+window.fbGetLeaderboard=async function(){
+  try{
+    const q=query(
+      collection(db,'leaderboard'),
+      where('deviceId','==',DEVICE_ID),
+      orderBy('money','desc'),
+      limit(10)
+    );
+    const snap=await getDocs(q);
+    return snap.docs.map(d=>({id:d.id,...d.data()}));
+  }catch(e){return null;}
+};
+
+// Sayfa yüklenince başlat
+window.addEventListener('load',()=>{
+  startPresence();
+  window.fbFlushPending(); // bekleyen skorları gönder
+});
+</script>
+<style>
+body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:#111;color:#eee;padding:15px;margin:0;min-height:100vh;transition:background 0.5s ease;}
+body.crypto-night{background:#1a0033!important;}
+body.crypto-night .card{border-color:#bc13fe!important;box-shadow:0 0 10px rgba(188,19,254,0.2);}
+body.crypto-night .game-title{background:none!important;-webkit-text-fill-color:#f0aaff!important;color:#f0aaff!important;text-shadow:0 0 12px #bc13fe,0 0 24px #9b13fe;}
+body.millionaire-mode .game-title{background:none!important;-webkit-text-fill-color:#f9e44a!important;color:#f9e44a!important;text-shadow:0 0 10px #d4a017,0 0 20px #f1c40f;}
+body.millionaire-mode .topbar{border:1px solid #f1c40f33;}
+
+#splashScreen{position:fixed;top:0;left:0;width:100%;height:100%;background:#111;z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center;}
+.btn-continue{
+  width:100%;max-width:300px;padding:16px;
+  background:linear-gradient(135deg,#27ae60,#2ecc71);
+  color:white;font-size:17px;border-radius:12px;font-weight:bold;
+  margin-top:0;border:none;cursor:pointer;
+  box-shadow:0 4px 20px rgba(46,204,113,0.35);
+  letter-spacing:0.5px;
+}
+.btn-continue:active{transform:scale(0.96);}
+.save-badge{
+  width:100%;max-width:300px;
+  font-size:12px;color:#555;
+  margin:10px 0 14px 0;
+  background:#1a1a1a;border:1px solid #2a2a2a;
+  border-radius:10px;padding:10px 14px;
+  display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
+  box-sizing:border-box;
+}
+.save-badge span{color:#777;font-size:12px;}
+.save-badge span b{color:#999;}
+.btn-newgame{
+  width:100%;max-width:300px;padding:13px;
+  background:transparent;color:#555;
+  font-size:14px;border-radius:12px;font-weight:bold;
+  border:1px solid #2a2a2a;cursor:pointer;
+  letter-spacing:0.3px;
+}
+.btn-newgame:hover{border-color:#444;color:#777;}
+.btn-newgame:active{transform:scale(0.96);}
+.splash-divider{width:100%;max-width:300px;border:none;border-top:1px solid #1e1e1e;margin:18px 0;}
+.splash-content{
+  max-width:360px;width:100%;
+  display:flex;flex-direction:column;
+  align-items:center;
+}
+.version-tag{font-size:11px;color:#444;margin-top:-8px;margin-bottom:8px;letter-spacing:0.5px;}
+.splash-desc{color:#888;font-size:14px;line-height:1.6;margin:16px 0 24px 0;text-align:center;}
+
+.game-title{text-align:center;background:linear-gradient(90deg,#2980b9,#3498db,#5dade2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:15px;font-weight:bold;letter-spacing:2px;transition:0.3s;}
+.topbar{display:flex;justify-content:space-between;align-items:center;background:#1e1e1e;padding:10px;border-radius:10px;margin-bottom:10px;}
+.top-actions{display:flex;gap:8px;align-items:center;}
+.restart,.bank-btn,.info-btn,.ms-btn{background:#444;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:16px;transition:0.2s;}
+.ms-btn{color:#f1c40f;}.info-btn{color:#3498db;}
+
+.status-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px;font-weight:bold;}
+.portfolio-container{flex-grow:1;height:12px;background:#222;border-radius:6px;display:flex;overflow:hidden;border:1px solid #333;}
+.portfolio-segment{height:100%;transition:width 0.3s ease;}
+.portfolio-btn{background:#2c3e50;color:#eee;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid #3498db;white-space:nowrap;position:relative;z-index:10;}
+
+/* Sekmeler */
+.tab-bar{display:flex;gap:6px;margin-bottom:10px;}
+.tab-btn{flex:1;padding:8px 4px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:bold;background:#2c3e50;color:#aaa;transition:0.2s;}
+.tab-btn.active{background:#3498db;color:#fff;}
+
+.card{background:#1e1e1e;padding:12px;margin-bottom:10px;border-radius:10px;border-left:4px solid #333;transition:0.2s;}
+.card.delisted{opacity:0.4;border-left-color:#555!important;}
+.row{display:flex;justify-content:space-between;align-items:center;}
+.right-side{display:flex;gap:8px;align-items:center;}
+button{padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;user-select:none;-webkit-user-select:none;transition:transform 0.08s ease,box-shadow 0.08s ease;touch-action:manipulation;}
+button:disabled{opacity:0.3;cursor:not-allowed;}
+button:not(:disabled):active{transform:scale(0.87);box-shadow:0 0 0 2px rgba(255,255,255,0.18);}
+.buy{background:#2ecc71;color:white;}.sell{background:#e74c3c;color:white;}
+.sell.no-stock{background:#555!important;color:#999!important;cursor:not-allowed;}
+.icon{background:#444;color:white;}
+.small{font-size:12px;margin-top:5px;}
+.tab-panel{max-height:400px;overflow-y:auto;padding-right:5px;}
+.next{width:100%;padding:15px;margin-top:10px;background:#3498db;color:white;font-size:16px;border-radius:8px;}
+#news-box{background:#2c3e50;border:1px solid #3498db;padding:12px;border-radius:8px;margin-bottom:10px;min-height:50px;}
+
+/* Gayrimenkul kartı */
+.re-card{background:#1e1e1e;padding:12px;margin-bottom:10px;border-radius:10px;border-left:4px solid #e67e22;}
+.re-card .small{color:#aaa;}
+.re-rent-badge{font-size:10px;background:#1a3a1a;color:#2ecc71;padding:2px 6px;border-radius:4px;margin-left:6px;}
+
+#overlay,#chartPopup,#portfolioPopup,.modal,#nameInputModal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);display:none;justify-content:center;align-items:center;flex-direction:column;z-index:1100;}
+.modal-content{background:#1e1e1e;padding:20px;border-radius:15px;border:1px solid #3498db;width:320px;text-align:center;}
+.info-scroll{text-align:left;max-height:350px;overflow-y:auto;padding-right:10px;font-size:13.5px;line-height:1.6;color:#ccc;}
+.info-scroll b{color:#3498db;}
+.made-by{font-size:11px;color:#666;margin-top:15px;font-style:italic;border-top:1px solid #333;padding-top:10px;text-align:center;}
+
+.p-list-item{background:#222;border-radius:8px;padding:10px;margin-bottom:8px;border-left:3px solid #555;text-align:left;}
+.p-header{display:flex;justify-content:space-between;font-weight:bold;font-size:14px;margin-bottom:5px;}
+.p-details{display:grid;grid-template-columns:1fr 1fr;font-size:11px;color:#aaa;gap:4px;}
+
+.fin-summary-box{background:#111;border:1px solid #3498db;border-radius:10px;padding:12px;margin-bottom:12px;text-align:left;}
+.fin-summary-title{font-size:12px;color:#3498db;font-weight:bold;letter-spacing:1px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #333;}
+.fin-row{display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid #1e1e1e;}
+.fin-row:last-child{border-bottom:none;}
+.fin-label{color:#aaa;}.fin-value{font-weight:bold;}
+.fin-total-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:bold;padding:7px 0 3px 0;margin-top:4px;border-top:1px solid #444;color:#fff;}
+.fin-progress-wrap{margin-top:10px;}
+.fin-progress-label{display:flex;justify-content:space-between;font-size:11px;color:#aaa;margin-bottom:4px;}
+.fin-progress-bar{height:8px;background:#333;border-radius:4px;overflow:hidden;}
+.fin-progress-fill{height:100%;border-radius:4px;transition:width 0.4s ease;}
+
+.section-label{font-size:11px;color:#3498db;font-weight:bold;letter-spacing:1px;margin:10px 0 4px 0;padding-bottom:4px;border-bottom:1px solid #333;}
+
+.report-table{width:100%;font-size:11px;margin-top:10px;border-collapse:collapse;}
+.report-table td,.report-table th{padding:4px;border-bottom:1px solid #333;text-align:left;}
+.report-table th{color:#aaa;font-weight:bold;}
+.pos{color:#2ecc71;}.neg{color:#e74c3c;}
+
+@keyframes pulse-green{
+  0%,100%{opacity:1;transform:scale(1);}
+  50%{opacity:0.4;transform:scale(0.85);}
+}
+.online-dot{
+  display:inline-block;
+  width:8px;height:8px;
+  background:#2ecc71;
+  border-radius:50%;
+  animation:pulse-green 1.4s ease-in-out infinite;
+  margin-right:5px;
+  vertical-align:middle;
+}
+.ms-card{background:#222;padding:10px;border-radius:10px;margin-bottom:8px;border:1px solid #444;text-align:left;transition:0.3s;}
+/* Şans Sekmesi */
+.luck-card{background:#1e1e1e;padding:14px;margin-bottom:12px;border-radius:12px;border-left:4px solid #f1c40f;}
+.luck-title{font-weight:bold;font-size:15px;color:#f1c40f;margin-bottom:4px;}
+.luck-desc{font-size:12px;color:#888;margin-bottom:10px;}
+.luck-btn{background:linear-gradient(135deg,#f39c12,#f1c40f);color:#111;padding:8px 16px;border-radius:8px;font-weight:bold;font-size:13px;cursor:pointer;border:none;}
+.luck-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.wheel-container{position:relative;width:220px;height:220px;margin:10px auto;}
+.wheel-canvas{border-radius:50%;display:block;}
+.wheel-pointer{position:absolute;top:-12px;left:50%;transform:translateX(-50%);font-size:24px;z-index:10;}
+.lb-row{display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #222;font-size:13px;}
+.lb-row:last-child{border-bottom:none;}
+.lb-rank{font-size:16px;width:28px;text-align:center;flex-shrink:0;}
+.lb-info{flex:1;}
+.lb-name{font-weight:bold;color:#eee;}
+.lb-detail{font-size:11px;color:#666;margin-top:2px;}
+.lb-score{font-weight:bold;color:#2ecc71;white-space:nowrap;}
+.ms-unlocked{border-color:#2ecc71;background:#1a2e23;box-shadow:0 0 5px rgba(46,204,113,0.2);}
+.ms-card b{display:block;font-size:14px;margin-bottom:3px;color:#f1c40f;}
+.ms-card small{display:block;font-size:11px;color:#aaa;margin-bottom:5px;}
+.ms-reward{font-size:12px;font-weight:bold;color:#2ecc71;}
+
+#chartPopup .chart-inner{background:#1e1e1e;border:1px solid #3498db;border-radius:14px;padding:20px;text-align:center;width:320px;max-height:90vh;overflow-y:auto;}
+#chartCompanyInfo{font-size:12px;color:#aaa;margin:6px 0 12px 0;line-height:1.6;text-align:left;background:#111;border-radius:8px;padding:8px 10px;border-left:3px solid #3498db;}
+canvas{background:#222;border-radius:8px;}
+
+.toggle-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #333;}
+.toggle-row:last-child{border-bottom:none;}
+.toggle-label{font-size:14px;color:#eee;}
+.toggle-switch{position:relative;width:46px;height:24px;}
+.toggle-switch input{opacity:0;width:0;height:0;}
+.toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#555;border-radius:24px;transition:.3s;}
+.toggle-slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.3s;}
+input:checked+.toggle-slider{background:#2ecc71;}
+input:checked+.toggle-slider:before{transform:translateX(22px);}
+.settings-btn{background:#444;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:16px;transition:0.2s;}
+input{width:85%;padding:12px;margin:15px 0;background:#111;border:1px solid #444;color:white;border-radius:8px;text-align:center;font-size:16px;}
+
+/* Kira popup */
+#rentModal .modal-content{border-color:#2ecc71;}
+/* Feedback */
+#feedbackModal .modal-content{border-color:#9b59b6;}
+#feedbackText{width:100%;height:100px;background:#111;border:1px solid #444;color:#eee;border-radius:8px;padding:10px;font-size:14px;resize:none;box-sizing:border-box;font-family:inherit;}
+#feedbackText:focus{outline:none;border-color:#9b59b6;}
+
+/* Ana ekrana ekle banner */
+#installBanner{
+  position:fixed;bottom:70px;left:0;right:0;
+  background:#1e1e1e;border-top:1px solid #3498db;
+  padding:12px 16px;z-index:400;
+  display:none;align-items:center;gap:10px;
+  box-shadow:0 -4px 20px rgba(0,0,0,0.5);
+}
+#installBanner .ib-icon{font-size:28px;flex-shrink:0;}
+#installBanner .ib-text{flex:1;font-size:13px;line-height:1.4;}
+#installBanner .ib-text b{color:#eee;display:block;margin-bottom:2px;}
+#installBanner .ib-text span{color:#888;font-size:11px;}
+#installBanner .ib-btn{background:#3498db;color:white;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:bold;border:none;cursor:pointer;white-space:nowrap;flex-shrink:0;}
+#installBanner .ib-close{color:#555;font-size:20px;cursor:pointer;padding:4px 8px;flex-shrink:0;}
+
+/* iOS talimat popup */
+#iosInstallModal .modal-content{border-color:#3498db;max-width:300px;}
+.ios-step{display:flex;align-items:flex-start;gap:8px;margin:8px 0;font-size:12px;color:#ccc;}
+.ios-step span{font-size:16px;flex-shrink:0;}
+
+/* ═══════════════════════════════════════════════
+   MOBİL DÜZELTMELER
+═══════════════════════════════════════════════ */
+@media (max-width: 600px) {
+
+  /* 4) Splash ekran — tam ortalama, padding-bottom etkilemesin */
+  #splashScreen{
+    padding: 30px 20px;
+    box-sizing: border-box;
+    padding-bottom: 30px !important;
+  }
+  .splash-content{
+    width: 100%;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .splash-content .game-title{
+    font-size: 36px !important;
+  }
+  .splash-desc{ font-size: 14px; }
+
+  /* Splash butonu — fixed etkilenmesin, z-index üstte */
+  #splashScreen .next{
+    position: relative !important;
+    bottom: auto !important;
+    left: auto !important;
+    width: auto !important;
+    max-width: 250px;
+    border-radius: 8px !important;
+    z-index: auto !important;
+  }
+
+  /* nameInputModal butonu da etkilenmesin */
+  #nameInputModal .buy{
+    position: relative !important;
+    bottom: auto !important;
+  }
+
+  /* 1) Topbar — ikonlar alt satıra */
+  .topbar{
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .top-actions{
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .restart,.bank-btn,.info-btn,.ms-btn,.settings-btn{
+    padding: 8px 10px;
+    font-size: 18px;
+  }
+  .topbar > div:first-child{ width: 100%; }
+
+  /* Status row */
+  .status-row{ flex-wrap: wrap; gap: 6px; }
+
+  /* 3) Milyoner modunda para hedefi alt satıra */
+  body.millionaire-mode #moneyBox{
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  body.millionaire-mode #moneyMain{
+    display:inline-flex;
+    align-items:center;
+    white-space:nowrap;
+  }
+  body.millionaire-mode #moneyTarget{
+    font-size: 11px;
+    color: #f1c40f;
+    display: block !important;
+    white-space:nowrap;
+  }
+  /* Normal modda para+birim aynı satır, hedef alt satır */
+  #moneyBox{
+    display:flex;
+    flex-direction:column;
+    align-items:flex-start;
+    gap:0;
+    font-size:13px;
+  }
+  #moneyMain{
+    display:inline-flex;
+    align-items:center;
+    gap:0;
+    white-space:nowrap;
+  }
+  #moneyTarget{
+    font-size:11px;
+    color:#aaa;
+    white-space:nowrap;
+  }
+
+  /* 2) Sonraki gün butonu sabit altta — SADECE #btnNextDay */
+  #btnNextDay{
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    z-index: 500 !important;
+    padding: 16px !important;
+    font-size: 15px !important;
+    overflow: hidden !important;
+  }
+  #btnNextDay::before{
+    content:'';
+    position:absolute;
+    top:0;left:0;height:100%;
+    width:var(--day-progress,0%);
+    background:rgba(0,0,0,0.22);
+    pointer-events:none;
+    transition:none;
+  }
+
+  /* İçerik için alan bırak */
+  #panel-stocks, #panel-trade, #panel-realestate{
+    padding-bottom: 10px;
+  }
+  #news-box{ margin-bottom: 8px; font-size: 13px; }
+
+  /* body padding — JS ile yönetilecek (init/restart'ta) */
+
+  /* Tab paneller scroll */
+  .tab-panel{ max-height: calc(100vh - 300px); overflow-y: auto; }
+
+  /* Modal içerikleri ekrana sığsın */
+  .modal-content{
+    width: calc(100% - 30px) !important;
+    max-width: 360px;
+    max-height: 85vh;
+    overflow-y: auto;
+    margin: 10px;
+  }
+  #chartPopup .chart-inner{
+    width: calc(100% - 30px) !important;
+    max-width: 340px;
+  }
+  canvas{ width: 100% !important; height: auto !important; max-width: 280px; }
+
+  /* 3) Gayrimenkul kartı — taşma düzeltme */
+  .re-card{ padding: 10px 8px; }
+  .re-card .row{ flex-wrap: wrap; gap: 6px; }
+  .re-card .row > strong{
+    font-size: 13px;
+    flex: 1 1 100%;
+    word-break: break-word;
+  }
+  .re-rent-badge{ display: inline-block; margin-left: 0; margin-top: 2px; }
+  .re-card .right-side{ width: 100%; justify-content: flex-end; margin-top: 4px; }
+  .re-card .small{ font-size: 11px; word-break: break-word; line-height: 1.5; }
+
+  /* Hisse/Ticaret kartı */
+  .card .row{ flex-wrap: wrap; gap: 4px; }
+  .card .right-side{ gap: 5px; }
+  .card .right-side button{ padding: 5px 8px; font-size: 12px; }
+  .card .right-side span{ font-size: 13px; }
+
+  /* Sekmeler */
+  .tab-btn{ font-size: 11px; padding: 8px 2px; }
+
+  /* Portfolio popup */
+  #portfolioPopup .modal-content{ width: calc(100% - 20px) !important; }
+}
+</style>
+</head>
+<body>
+
+<div id="splashScreen">
+  <div class="splash-content">
+    <h1 class="game-title" style="font-size:42px;margin-bottom:6px;">TRADE GAME</h1>
+    <div class="version-tag">v1.5.26</div>
+    <p class="splash-desc">Finans dünyasının kapıları senin için aralanıyor! Stratejini belirle, piyasanın ritmini yakala ve sıfırdan bir imparatorluk kur. 📈💰</p>
+    <div id="splashButtons">
+      <!-- JS tarafından doldurulacak -->
+    </div>
+  </div>
+</div>
+
+<div id="nameInputModal">
+  <div class="modal-content">
+    <h3 style="margin-top:0">HOŞ GELDİN TRADER</h3>
+    <p style="font-size:13px;color:#aaa;">Piyasada tanınacağın ismini gir:</p>
+    <input type="text" id="playerNameInput" placeholder="İsminiz (Maks 30 Karakter)" maxlength="30">
+    <button class="buy" onclick="confirmNameAndStart()" style="width:100%;padding:15px;">PİYASAYA GİR</button>
+  </div>
+</div>
+
+<h2 class="game-title" id="mainTitle">TRADE GAME</h2>
+<div class="version-tag" style="text-align:center;margin-top:-10px;margin-bottom:6px;">v1.5.26</div>
+
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div style="display:flex;align-items:center;gap:5px;background:#2c3e50;padding:5px 10px;border-radius:8px;border:1px solid #3498db;">
+      <span style="font-size:16px">👤</span>
+      <span id="playerDisplay" style="font-size:13px;font-weight:bold;color:#3498db;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Trader</span>
+    </div>
+    <div>
+      <div id="moneyBox"><span id="moneyMain">💰 <span id="money"></span><span id="moneyCur">₺</span></span><span id="moneyTarget"> / 🎯 1.000.000₺</span></div>
+      <div id="debtDisplay" style="font-size:11px;color:#e74c3c;font-weight:bold;margin-top:2px;display:none;">Borç: <span id="debt">0</span><span id="debtCur">₺</span></div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span id="onlineCount" style="font-size:11px;color:#2ecc71;background:#1a2e1a;padding:4px 10px;border-radius:12px;font-weight:bold;white-space:nowrap;display:flex;align-items:center;gap:3px;"><span class="online-dot"></span><span id="onlineNum">...</span> Online</span>
+    <div class="bank-btn" onclick="openBank()">🏦</div>
+    <div class="ms-btn" onclick="openMS()">🏆</div>
+    <div class="info-btn" onclick="openInfo()">ℹ️</div>
+    <div class="settings-btn" onclick="openSettings()">⚙️</div>
+    <div class="restart" onclick="confirmRestart()">🔄</div>
+  </div>
+</div>
+
+<div class="status-row">
+  <span>⏳ <span id="day-display"></span><span id="day-limit"> / 60</span></span>
+  <div class="portfolio-container" id="portfolioBar" title=""></div>
+  <div class="portfolio-btn" id="btnPortfolio" onclick="openPortfolio()">💼 Varlıklarım</div>
+</div>
+
+<!-- Sekmeler — sadece Milyoner Modda görünür -->
+<div class="tab-bar" id="tabBar" style="display:none;">
+  <button class="tab-btn active" id="tab-stocks" onclick="switchTab('stocks')">📈 Hisse</button>
+  <button class="tab-btn" id="tab-trade" onclick="switchTab('trade')">🛍️ Ticaret</button>
+  <button class="tab-btn" id="tab-realestate" onclick="switchTab('realestate')">🏠 Emlak</button>
+  <button class="tab-btn" id="tab-luck" onclick="switchTab('luck')">🎲 Şans</button>
+</div>
+
+<div id="news-box" style="background:#2c3e50;border:1px solid #3498db;padding:12px;border-radius:8px;margin-bottom:10px;min-height:50px;">
+  <div id="news-label" style="font-size:12px;color:#3498db;margin-bottom:4px;">📢 YARIN İÇİN BEKLENTİ:</div>
+  <div id="news-text">Haberler yükleniyor...</div>
+</div>
+<div id="panel-stocks" class="tab-panel"></div>
+<div id="panel-trade" class="tab-panel" style="display:none;"></div>
+<div id="panel-realestate" class="tab-panel" style="display:none;"></div>
+<div id="panel-luck" class="tab-panel" style="display:none;"></div>
+
+<button class="next" id="btnNextDay" onclick="nextDay()">SONRAKİ GÜNÜ BAŞLAT</button>
+
+<!-- Portföy -->
+<div id="portfolioPopup">
+  <div class="modal-content" style="max-height:90vh;overflow-y:auto;width:330px;">
+    <h3 id="portTitle" style="margin-top:0">💼 Varlık Detayları</h3>
+    <div id="portfolioList"></div>
+    <button id="btnPortfolioClose" onclick="document.getElementById('portfolioPopup').style.display='none'" style="margin-top:15px;width:100%;background:#444;color:white;padding:10px;border-radius:8px;">KAPAT</button>
+  </div>
+</div>
+
+<!-- Oyun sonu -->
+<div id="overlay">
+  <div class="modal-content" style="width:320px;max-height:90vh;overflow-y:auto;">
+    <h2 id="resultText" style="margin:0"></h2>
+    <p id="resultSub" style="font-size:12px;color:#aaa;margin-bottom:15px;"></p>
+    <div style="text-align:left;background:#111;padding:10px;border-radius:10px;">
+      <div id="reportHeader" style="font-size:13px;font-weight:bold;border-bottom:1px solid #333;padding-bottom:5px;">Hisse Bazlı Performans:</div>
+      <table class="report-table" id="reportTable"></table>
+      <div style="margin-top:10px;font-size:12px;" id="financeSummary"></div>
+    </div>
+    <button id="btnRestart" onclick="doRestart()" style="margin-top:20px;padding:12px 20px;background:#3498db;color:white;border-radius:8px;width:100%;">Yeni Oyuna Başla</button>
+  </div>
+</div>
+
+<!-- Banka -->
+<div id="bankModal" class="modal">
+  <div class="modal-content">
+    <h3 id="bankTitle">🏦 Banka İşlemleri</h3>
+    <div id="bankSubtitle" style="font-size:12px;color:#aaa;margin-bottom:10px;line-height:1.6;">Günlük Faiz: %2-%8.5 | Limit: 500k<br><span style="font-size:10px;color:#666;">≤50k:%2 | ≤100k:%4 | ≤200k:%6 | ≤300k:%7 | ≤500k:%8.5</span></div>
+    <input type="number" id="bankAmount" placeholder="Miktar ₺" data-tr="Miktar ₺" data-en="Amount $">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <button onclick="bankAction('loan')" class="buy" id="btnLoan">KREDİ AL</button>
+      <button onclick="bankAction('pay')" class="sell" id="btnPay">BORÇ ÖDE</button>
+    </div>
+    <button onclick="closeModals()" id="btnBankClose" style="margin-top:10px;width:100%;background:#444;color:white;padding:8px">KAPAT</button>
+  </div>
+</div>
+
+<!-- Info -->
+<div id="infoModal" class="modal">
+  <div class="modal-content" style="width:310px;">
+    <h3 id="infoTitle" style="margin-top:0;color:#3498db;">ℹ️ Oyun Rehberi</h3>
+    <div class="info-scroll" id="infoContent">
+      <p><b>Hoş geldin Borsa Kaplanı!</b> 📈<br>60 gün içinde 50.000₺'yi 1 Milyon₺ yapman gerekiyor.</p>
+      <p><b>📈 Hisseler:</b> Tanıdık borsa deneyimi. AL/SAT, grafik, uzun basarak toplu işlem.</p>
+      <p><b>🛍️ Ticaret:</b> Fiziksel ürünler al-sat. Fiyatlar gün içi ve günler arasında değişir.</p>
+      <p><b>🏠 Gayrimenkul:</b> Mülk al, kira kazan! Fiyatlar 5 günde bir güncellenir.</p>
+      <p><b>💰 Milyoner Modu:</b> Ayarlardan açılır. 50M₺ sermaye, 1 Milyar₺ hedef, 90 gün!</p>
+      <p><b>👾 Kripto Gecesi:</b> Her 10 günde bir başlar, her şey deli gibi dalgalanır!</p>
+      <p><b>🔥 Sürpriz Olaylar:</b> Her 2 günde bir rastgele olaylar yaşanır.</p>
+      <p><b>🏆 Başarımlar:</b> Belirli hedeflere ulaşınca nakit ödül kazanırsın.</p>
+      <p><b>⛔ Delisting:</b> Fiyatı 1₺'ye düşen hisselerde alım-satım durur.</p>
+      <p><b>🎲 Şans Sekmesi:</b> Sadece Milyoner Modda aktif. Talih Kuşu biletleri al, Çarkıfelek çevir!</p>
+      <p><b>♾️ Sınırsız Mod:</b> Ayarlardan açılır. Süre ve hedef yok; sonsuza dek oyna!</p>
+      <hr style="border-color:#333;margin:10px 0;">
+      <p style="font-size:11px;color:#888;text-align:justify;"><b style="color:#aaa;">⚖️ Gizlilik & Uyarılar</b><br>
+      Bu bir oyundur ve yatırım tavsiyesi içermez; size herhangi bir yatırım öğretisi sunmaz. 🎮 Oyunda yer alan isimler, şirket adları ve hisse kodları tamamen hayali olup gerçek kişi, kurum veya kuruluşlarla hiçbir ilişkisi yoktur. 🔒 Bu oyun kişisel verilerinizi kaydetmez; internet bağlantısı olmadan doğrudan tarayıcınızda çalışır. <i>Bu oyun bir hobi uğraşısı olarak hayata geçirilmiştir. 🚀</i></p>
+
+      <hr style="border-color:#333;margin:10px 0;">
+      <p style="font-size:11px;color:#888;"><b style="color:#aaa;">📋 Güncellemeler</b><br>
+      <b style="color:#666;">28.03.2026</b> — v1.5.26: Milyoner moduna 4 yeni firma (Savunma Sanayi, Yazılım, Teknoloji, Tekstil) eklendi; firma yatırım & senaryo sistemi; başarım bonusları 50x artırıldı; oyun sonu ekranında borç ve net skor gösterimi iyileştirildi.<br>
+      <b style="color:#666;">27.03.2026</b> — Oyunun ilk sürümü yayımlandı.</p>
+      <hr style="border-color:#333;margin:10px 0;">
+      <div style="text-align:center;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+        <button onclick="openFeedback()" style="background:#9b59b620;color:#9b59b6;border:1px solid #9b59b640;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">💬 Geri Bildirim</button>
+        <button onclick="window.open('https://watchempire.net','_blank')" style="background:#2ecc7120;color:#2ecc71;border:1px solid #2ecc7140;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">⌚ Watch Empire'ı Denediniz mi?</button>
+        <button onclick="shareGame()" style="background:#3498db20;color:#3498db;border:1px solid #3498db40;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">🔗 Paylaş</button>
+      </div>
+      <div class="made-by">made with 🖤 by mrtrclb<br><span style="font-size:10px;opacity:0.5;">© 2026</span></div>
+    </div>
+    <button id="infoClose" onclick="closeModals()" style="margin-top:15px;width:100%;background:#444;color:white;padding:10px">ANLAŞILDI</button>
+  </div>
+</div>
+
+<!-- Event -->
+<div id="eventModal" class="modal" style="z-index:1200;">
+  <div class="modal-content" style="border-color:#e67e22;width:300px;">
+    <h3 id="eventHeader" style="color:#e67e22;margin:0">SÜRPRİZ GELİŞME!</h3>
+    <p id="eventDesc" style="margin:15px 0;font-size:15px;"></p>
+    <p id="eventImpact" style="font-weight:bold;color:#2ecc71;"></p>
+    <button id="btnEventOk" onclick="document.getElementById('eventModal').style.display='none'" style="background:#e67e22;color:white;width:100%;padding:10px">TAMAM</button>
+  </div>
+</div>
+
+<!-- Başarımlar -->
+<div id="msModal" class="modal">
+  <div class="modal-content" style="width:300px;">
+    <h3 id="msTitle" style="margin-top:0;color:#f1c40f;">🏆 Başarımlar</h3>
+    <div id="msList" class="info-scroll"></div>
+    <button id="btnMsClose" onclick="closeModals()" style="margin-top:15px;width:100%;background:#444;color:white;padding:10px">KAPAT</button>
+  </div>
+</div>
+
+<!-- Başarım kazanıldı -->
+<div id="unlockedModal" class="modal" style="z-index:1200;">
+  <div class="modal-content" style="border-color:#f1c40f;">
+    <h2 id="unlockedHeader">TEBRİKLER!</h2>
+    <p id="unlockedTitle" style="font-weight:bold;margin:10px 0"></p>
+    <p id="unlockedBonus" style="color:#2ecc71;font-size:14px"></p>
+    <button id="btnUnlockedOk" onclick="document.getElementById('unlockedModal').style.display='none'" style="background:#f1c40f;color:#000;width:100%;padding:10px">HARİKA!</button>
+  </div>
+</div>
+
+<!-- Toplu işlem -->
+<div id="massModal" class="modal">
+  <div class="modal-content">
+    <h3 id="massTitle" style="margin-top:0">Toplu İşlem</h3>
+    <input type="number" id="massQty" placeholder="Adet">
+    <div style="display:flex;gap:10px;">
+      <button id="massConfirmBtn" class="buy" style="flex:1;padding:12px">ONAYLA</button>
+      <button id="btnMassCancel" onclick="closeModals()" style="flex:1;background:#444;color:white;">İPTAL</button>
+    </div>
+  </div>
+</div>
+
+<!-- Liderlik Tablosu -->
+<div id="leaderboardModal" class="modal">
+  <div class="modal-content" style="width:320px;max-height:85vh;overflow-y:auto;">
+    <h3 style="margin-top:0;color:#f1c40f;">🏆 <span id="lb-title-txt">En İyi Skorlarım</span></h3>
+    <div id="leaderboardList" style="text-align:left;min-height:80px;">
+      <div style="text-align:center;color:#555;padding:20px;">Yükleniyor...</div>
+    </div>
+    <button onclick="closeModals()" style="margin-top:15px;width:100%;background:#444;color:white;padding:10px;border-radius:8px;">KAPAT</button>
+  </div>
+</div>
+
+<!-- Ayarlar -->
+<div id="settingsModal" class="modal">
+  <div class="modal-content" style="width:300px;">
+    <h3 id="settingsTitle" style="margin-top:0;color:#3498db;">⚙️ Ayarlar</h3>
+    <div style="margin:10px 0;">
+      <div class="toggle-row">
+        <span class="toggle-label" id="lbl-sound">🔊 Ses</span>
+        <label class="toggle-switch"><input type="checkbox" id="toggleSound" checked onchange="applySoundSetting()"><span class="toggle-slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label" id="lbl-lang">🌐 Dil / Language</span>
+        <label class="toggle-switch"><input type="checkbox" id="toggleLang" onchange="applyLangSetting()"><span class="toggle-slider"></span></label>
+      </div>
+      <div style="font-size:10px;color:#555;margin:-6px 0 6px 0;text-align:right;">TR &nbsp;/&nbsp; EN</div>
+      <div class="toggle-row">
+        <span class="toggle-label" id="lbl-unlimited">♾️ Sınırsız Mod</span>
+        <label class="toggle-switch"><input type="checkbox" id="toggleUnlimited" onchange="applyUnlimitedSetting()"><span class="toggle-slider"></span></label>
+      </div>
+      <div id="unlimitedWarning" style="display:none;font-size:11px;color:#e67e22;margin-top:4px;padding:6px 8px;background:#2c1a00;border-radius:6px;border-left:3px solid #e67e22;">
+        ⚠️ <span id="unlimitedWarnText">Sınırsız Mod açılırsa oyun sıfırlanır ve yeniden başlar. Süre sınırı ve hedef kaldırılır.</span>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label" id="lbl-millionaire">💰 Milyoner Modu</span>
+        <label class="toggle-switch"><input type="checkbox" id="toggleMillionaire" onchange="applyMillionaireSetting()"><span class="toggle-slider"></span></label>
+      </div>
+      <div id="millionaireWarning" style="display:none;"></div>
+    </div>
+    <button id="btnSettingsClose" onclick="closeModals()" style="margin-top:10px;width:100%;background:#444;color:white;padding:10px;border-radius:8px;">KAPAT</button>
+  </div>
+</div>
+
+<!-- Kira geliri popup -->
+<div id="rentModal" class="modal" style="z-index:1200;">
+  <div class="modal-content" style="border-color:#2ecc71;width:290px;">
+    <h3 id="rentModalTitle" style="color:#2ecc71;margin:0">🏠 Kira Geliri!</h3>
+    <p id="rentDesc" style="margin:15px 0;font-size:15px;"></p>
+    <p id="rentAmount" style="font-weight:bold;color:#2ecc71;font-size:18px;"></p>
+    <button id="rentModalOkBtn" onclick="document.getElementById('rentModal').style.display='none'" style="background:#2ecc71;color:#000;width:100%;padding:10px;margin-top:5px;">TAMAM</button>
+  </div>
+</div>
+
+<!-- Ana ekrana ekle banner -->
+<div id="installBanner">
+  <div class="ib-icon">📲</div>
+  <div class="ib-text">
+    <b id="ib-title">Ana Ekrana Ekle</b>
+    <span id="ib-desc">Daha hızlı aç, uygulama gibi kullan!</span>
+  </div>
+  <button class="ib-btn" id="ib-btn" onclick="doInstall()">Ekle</button>
+  <span class="ib-close" onclick="dismissInstall()">✕</span>
+</div>
+
+<!-- iOS kurulum talimatı -->
+<div id="iosInstallModal" class="modal" style="z-index:1200;">
+  <div class="modal-content">
+    <h3 style="margin-top:0;color:#3498db;font-size:16px;" id="ios-title">📲 Ana Ekrana Ekle</h3>
+    <div class="ios-step"><span>1️⃣</span><span id="ios-step1">Alttaki <b>Paylaş</b> butonuna bas <b>⎋</b></span></div>
+    <div class="ios-step"><span>2️⃣</span><span id="ios-step2"><b>"Ana Ekrana Ekle"</b> seçeneğini seç</span></div>
+    <div class="ios-step"><span>3️⃣</span><span id="ios-step3">Sağ üstteki <b>"Ekle"</b> butonuna bas</span></div>
+    <button onclick="document.getElementById('iosInstallModal').style.display='none';dismissInstall();" style="margin-top:15px;width:100%;background:#3498db;color:white;padding:10px;border-radius:8px;" id="ios-close">Anladım!</button>
+  </div>
+</div>
+
+<!-- Talih Kuşu Popup -->
+<div id="lotteryModal" class="modal" style="z-index:1200;">
+  <div class="modal-content" style="width:300px;">
+    <h3 style="margin-top:0;color:#f1c40f;">🐦 Talih Kuşu</h3>
+    <p id="lottery-desc" style="font-size:13px;color:#aaa;margin-bottom:14px;line-height:1.6;"></p>
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:#666;margin-bottom:16px;">
+      <span id="lottery-price"></span>
+      <span id="lottery-bought"></span>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button id="lottery-buy-btn" onclick="buyLotteryTicket()" style="flex:1;background:linear-gradient(135deg,#f39c12,#f1c40f);color:#111;padding:12px;border-radius:8px;font-weight:bold;border:none;cursor:pointer;font-size:14px;">🎟️ <span id="lottery-buy-txt">Bilet Al</span></button>
+      <button onclick="closeModals()" style="flex:1;background:#333;color:#aaa;padding:12px;border-radius:8px;border:none;cursor:pointer;"><span id="lottery-close-txt">Kapat</span></button>
+    </div>
+    <p style="font-size:10px;color:#444;text-align:center;margin-top:10px;" id="lottery-note">Sonuç yarın açıklanacak!</p>
+  </div>
+</div>
+
+<!-- Çarkıfelek Popup -->
+<div id="wheelModal" class="modal" style="z-index:1200;">
+  <div class="modal-content" style="width:300px;text-align:center;">
+    <h3 style="margin-top:0;color:#e74c3c;">🎡 Çarkıfelek</h3>
+    <div class="wheel-container">
+      <div class="wheel-pointer">▼</div>
+      <canvas id="wheelCanvas" class="wheel-canvas" width="220" height="220"></canvas>
+    </div>
+    <div style="margin:12px 0;">
+      <div style="font-size:12px;color:#aaa;margin-bottom:6px;" id="wheel-bet-label">Yatırmak istediğin miktar:</div>
+      <input type="number" id="wheelBetInput" placeholder="Miktar ₺" style="width:140px;padding:8px;background:#111;border:1px solid #444;color:white;border-radius:8px;text-align:center;font-size:15px;margin:0;">
+    </div>
+    <div id="wheel-result" style="font-size:14px;font-weight:bold;min-height:20px;color:#2ecc71;margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button id="wheel-spin-btn" onclick="spinWheel()" style="flex:1;background:linear-gradient(135deg,#c0392b,#e74c3c);color:white;padding:12px;border-radius:8px;font-weight:bold;border:none;cursor:pointer;font-size:14px;">🎡 <span id="wheel-spin-txt">Çevir!</span></button>
+      <button onclick="closeModals()" style="flex:1;background:#333;color:#aaa;padding:12px;border-radius:8px;border:none;cursor:pointer;"><span id="wheel-close-txt">Kapat</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- Geri Bildirim -->
+<div id="feedbackModal" class="modal" style="z-index:1200;">
+  <div class="modal-content" style="width:310px;">
+    <h3 id="fb-title" style="margin-top:0;color:#9b59b6;">💬 Geri Bildirim</h3>
+    <p id="fb-desc" style="font-size:13px;color:#aaa;margin-bottom:12px;">Dilek, istek, hata bildirimi — her şeyi yazabilirsin!</p>
+    <textarea id="feedbackText" placeholder="Mesajını buraya yaz..."></textarea>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button id="fb-send" onclick="sendFeedback()" style="flex:1;background:#9b59b6;color:white;padding:10px;border-radius:8px;">Gönder</button>
+      <button onclick="closeModals()" style="flex:1;background:#444;color:white;padding:10px;border-radius:8px;" id="fb-cancel">İptal</button>
+    </div>
+    <div id="fb-status" style="font-size:12px;margin-top:8px;text-align:center;min-height:16px;"></div>
+  </div>
+</div>
+
+<!-- Grafik -->
+<div id="chartPopup">
+  <div class="chart-inner">
+    <h3 id="chartTitle" style="margin:0 0 4px 0;color:#3498db;"></h3>
+    <div id="chartCompanyInfo"></div>
+    <canvas id="chart" width="280" height="180"></canvas>
+    <button id="btnChartClose" onclick="closeChart()" style="background:#444;color:white;margin-top:12px;width:100%;padding:8px;border-radius:8px;">Kapat</button>
+  </div>
+</div>
+
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
+// ═══════════════════════════════════════════════════════
+// GLOBAL DEĞİŞKENLER
+// ═══════════════════════════════════════════════════════
+let money, day, totalDays, targetMoney, bankLimit;
+let debt=0, totalInterestPaid=0;
+let liveInterval, pendingEvent=null, holdTimer;
+let isBorsaHoliday=false, isCryptoNight=false;
+let peakCash=0, totalTrades=0;
+let soundEnabled=true, langEN=false, unlimitedMode=false, millionaireMode=false;
+let currentTab='stocks';
+let totalRentEarned=0, totalTradeProfit=0, totalRealEstateProfit=0;
+let totalLuckGain=0, totalLuckLost=0;
+let pendingLottery=false;      // Talih kuşu bekliyor mu
+let wheelUsedToday=false;      // Bugün çark kullanıldı mı
+let lotteryTicketsBought=0;    // Bugün kaç bilet alındı
+let rentQueue=[]; // bekleyen kira popup'ları
+// ── OTOMATİK GÜN İLERLEME ─────────────────────────────────────────────────
+const AUTO_DAY_MS = 120000; // 2 dakika
+let autoDayStart = 0;       // Date.now() — günün başladığı an
+let autoRafId = null;        // requestAnimationFrame handle
+
+// ═══════════════════════════════════════════════════════
+// FİRMA SİSTEMİ (Milyoner Modu)
+// ═══════════════════════════════════════════════════════
+const FIRMS=[
+  {
+    id:'defense', emoji:'🛡️',
+    nameTR:'Savunma Sanayi Firması', nameEN:'Defense Industry Company',
+    baseCost:20000000, dailyIncome:200000, color:'#e74c3c',
+    owned:false, purchaseCost:20000000, investLevel:0,
+    investCosts:[5000000,10000000,50000000],
+    investIncomes:[100000,300000,500000],
+    usedScenarios:[],
+    goodScenarios:[
+      {tr:'Devlet savunma ihalesini kazandın! 🏆',en:'Won government defense tender! 🏆', mult:8},
+      {tr:'Yeni nesil insansız hava aracı seri üretime geçti! ✈️',en:'New gen drone enters mass production! ✈️', mult:12},
+      {tr:'NATO ortaklık anlaşması imzalandı! 🤝',en:'NATO partnership agreement signed! 🤝', mult:15},
+      {tr:'Ar-Ge projesi başarıyla tamamlandı! 🔬',en:'R&D project successfully completed! 🔬', mult:10},
+      {tr:'Uluslararası silah fuarında büyük ödül! 🥇',en:'Big award at international arms fair! 🥇', mult:7},
+      {tr:'Yedek parça ihracat anlaşması yapıldı! 📦',en:'Spare parts export deal signed! 📦', mult:9},
+      {tr:'Akıllı mühimmat patenti onaylandı! 💡',en:'Smart munition patent approved! 💡', mult:11},
+      {tr:'Savunma Bakanlığı ile 5 yıllık sözleşme! 📋',en:'5-year contract with Defense Ministry! 📋', mult:14},
+      {tr:'Siber güvenlik çözümünü orduya sattın! 💻',en:'Sold cybersecurity solution to military! 💻', mult:6},
+    ],
+    badScenarios:[
+      {tr:'Silah testi başarısız oldu! Sözleşme iptal edildi. 💥',en:'Weapons test failed! Contract cancelled. 💥', mult:6},
+      {tr:'Fabrikada iş kazası yaşandı. Üretim durdu. 🚨',en:'Workplace accident occurred. Production halted. 🚨', mult:4},
+      {tr:'Rakip firma daha ucuz teklif verdi, ihaleyi kaybettin. 📉',en:'Rival firm bid lower, lost the tender. 📉', mult:3},
+      {tr:'Gümrük engeli: İhracat izni reddedildi! 🚫',en:'Customs barrier: Export permit denied! 🚫', mult:5},
+      {tr:'Kritik hammadde tedarik sorunu çıktı. 🏭',en:'Critical raw material supply issue arose. 🏭', mult:4},
+    ]
+  },
+  {
+    id:'software', emoji:'💻',
+    nameTR:'Yazılım Sektörü Firması', nameEN:'Software Sector Company',
+    baseCost:10500000, dailyIncome:100000, color:'#3498db',
+    owned:false, purchaseCost:10500000, investLevel:0,
+    investCosts:[3000000,7000000,15000000],
+    investIncomes:[50000,100000,300000],
+    usedScenarios:[],
+    goodScenarios:[
+      {tr:'SaaS ürününe büyük kurumsal müşteri kazandın! 🏢',en:'Won a large corporate client for SaaS product! 🏢', mult:8},
+      {tr:'Yapay zeka modülü viral oldu, kullanıcı patladı! 🤖',en:'AI module went viral, users exploded! 🤖', mult:10},
+      {tr:'App Store uygulaması seçildin! 📱',en:'Selected as App of the Week on App Store! 📱', mult:6},
+      {tr:'Bulut altyapı maliyetlerin %40 düştü! ☁️',en:'Cloud infrastructure costs dropped 40%! ☁️', mult:5},
+      {tr:'Stratejik ortaklık anlaşması imzalandı! 🤝',en:'Strategic partnership agreement signed! 🤝', mult:9},
+    ],
+    badScenarios:[
+      {tr:'Sunucu çökmesi! Müşteriler tazminat talep etti. 💥',en:'Server crash! Customers demanded compensation. 💥', mult:5},
+      {tr:'Güvenlik açığı tespit edildi, müşteri kaybı! 🔓',en:'Security vulnerability detected, lost clients! 🔓', mult:4},
+      {tr:'Rakip yazılım şirketi daha iyi özellik çıkardı. 📉',en:'Rival software launched better features. 📉', mult:3},
+      {tr:'Anahtar yazılım geliştiricin istifa etti! 😱',en:'Key software developer resigned! 😱', mult:4},
+      {tr:'KVKK ihlali cezası geldi! 📋',en:'Data protection fine issued! 📋', mult:5},
+    ]
+  },
+  {
+    id:'tech', emoji:'🚀',
+    nameTR:'Teknoloji Sektörü Firması', nameEN:'Technology Sector Company',
+    baseCost:70000000, dailyIncome:400000, color:'#9b59b6',
+    owned:false, purchaseCost:70000000, investLevel:0,
+    investCosts:[10000000,20000000,35000000],
+    investIncomes:[200000,500000,1000000],
+    usedScenarios:[],
+    goodScenarios:[
+      {tr:'Yeni nesil çip üretiminde devrim yarattın! 🔬',en:'Revolutionized next-gen chip production! 🔬', mult:15},
+      {tr:'Global teknoloji devi satın alma teklifi yaptı! 💰',en:'Global tech giant made acquisition offer! 💰', mult:20},
+      {tr:'Yapay zeka modelinin lisanslandırması başladı! 🤖',en:'AI model licensing started! 🤖', mult:12},
+      {tr:'Hisse senedi yüksek getiri beklentisiyle tavan yaptı! 📈',en:'Stock hit ceiling with high return expectations! 📈', mult:10},
+      {tr:'Üretim kapasitesi 3 katına çıktı! 🏭',en:'Production capacity tripled! 🏭', mult:8},
+    ],
+    badScenarios:[
+      {tr:'Ar-Ge bütçesinin %30u boşa gitti! 💸',en:'30% of R&D budget went to waste! 💸', mult:10},
+      {tr:'Patent davası kaybedildi, tazminat ödendi. ⚖️',en:'Patent lawsuit lost, compensation paid. ⚖️', mult:8},
+      {tr:'Tedarik zinciri krizi: Çip bulunamıyor! 😱',en:'Supply chain crisis: No chips available! 😱', mult:9},
+      {tr:'Siber saldırı: Ar-Ge verileri çalındı! 💻',en:'Cyber attack: R&D data stolen! 💻', mult:7},
+      {tr:'Düzenleyici kurum soruşturma başlattı. 📋',en:'Regulatory body launched investigation. 📋', mult:6},
+    ]
+  },
+  {
+    id:'textile', emoji:'👗',
+    nameTR:'Tekstil Sektörü Firması', nameEN:'Textile Sector Company',
+    baseCost:5000000, dailyIncome:50000, color:'#e67e22',
+    owned:false, purchaseCost:5000000, investLevel:0,
+    investCosts:[10000000,15000000,25000000],
+    investIncomes:[100000,200000,350000],
+    usedScenarios:[],
+    goodScenarios:[
+      {tr:'Avrupa moda markasıyla ihracat anlaşması! 🇪🇺',en:'Export deal with European fashion brand! 🇪🇺', mult:6},
+      {tr:'Organik kumaş trendini yakaladın! 🌿',en:'Caught the organic fabric trend! 🌿', mult:8},
+      {tr:'Büyük perakende zinciriyle tedarikçi oldun! 🏬',en:'Became supplier to major retail chain! 🏬', mult:7},
+      {tr:'Sürdürülebilir üretim ödülü kazandın! 🏆',en:'Won sustainable production award! 🏆', mult:5},
+      {tr:'Döviz kuru sana güldü, ihracat geliri arttı! 💱',en:'Forex worked in your favor, export income rose! 💱', mult:9},
+    ],
+    badScenarios:[
+      {tr:'Pamuk fiyatları fırladı, maliyet arttı! 📈',en:'Cotton prices soared, costs increased! 📈', mult:4},
+      {tr:'Fabrikada yangın çıktı, üretim aksadı. 🔥',en:'Fire broke out in factory, production disrupted. 🔥', mult:3},
+      {tr:'Kalite kontrol sorunu: Büyük sipariş iade edildi. 📦',en:'Quality control issue: Large order returned. 📦', mult:5},
+    ]
+  }
+];
+
+// Firma toplam günlük gelirini hesapla
+function getFirmsTotalDailyIncome(){
+  return FIRMS.reduce((sum,f)=>{
+    if(!f.owned)return sum;
+    let extra=f.investLevel>0?f.investIncomes.slice(0,f.investLevel).reduce((a,b)=>a+b,0):0;
+    return sum+f.dailyIncome+extra;
+  },0);
+}
+
+// ═══════════════════════════════════════════════════════
+// SES MOTORU
+// ═══════════════════════════════════════════════════════
+const AC=window.AudioContext||window.webkitAudioContext;
+let audioCtx=null;
+function getAC(){if(!audioCtx)audioCtx=new AC();return audioCtx;}
+function playTone(freq,type,duration,vol,startTime,ctx){
+  const o=ctx.createOscillator(),g=ctx.createGain();
+  o.connect(g);g.connect(ctx.destination);
+  o.type=type;o.frequency.setValueAtTime(freq,startTime);
+  g.gain.setValueAtTime(vol,startTime);
+  g.gain.exponentialRampToValueAtTime(0.0001,startTime+duration);
+  o.start(startTime);o.stop(startTime+duration+0.05);
+}
+const SFX={
+  buy(){   if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;playTone(440,'sine',0.08,0.18,t,c);playTone(660,'sine',0.10,0.18,t+0.09,c);}catch(e){}},
+  sell(){  if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;playTone(600,'sine',0.08,0.18,t,c);playTone(380,'sine',0.10,0.18,t+0.09,c);}catch(e){}},
+  milestone(){if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;[523,659,784,1047].forEach((f,i)=>playTone(f,'triangle',0.15,0.22,t+i*0.13,c));}catch(e){}},
+  gameover(){if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;[400,320,240,160].forEach((f,i)=>playTone(f,'sawtooth',0.25,0.28,t+i*0.18,c));}catch(e){}},
+  win(){   if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;[523,659,784,659,784,1047].forEach((f,i)=>playTone(f,'triangle',0.18,0.25,t+i*0.11,c));}catch(e){}},
+  crypto(){if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;for(let i=0;i<8;i++)playTone(200+i*80,'square',0.12,0.12,t+i*0.07,c);}catch(e){}},
+  event(){ if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;playTone(880,'sine',0.08,0.2,t,c);playTone(880,'sine',0.08,0.2,t+0.12,c);playTone(1100,'sine',0.12,0.2,t+0.24,c);}catch(e){}},
+  delist(){if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;playTone(300,'sawtooth',0.15,0.25,t,c);playTone(200,'sawtooth',0.20,0.25,t+0.18,c);}catch(e){}},
+  recover(){if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;[330,494,659].forEach((f,i)=>playTone(f,'sine',0.12,0.18,t+i*0.12,c));}catch(e){}},
+  rent(){  if(!soundEnabled)return;try{const c=getAC(),t=c.currentTime;playTone(528,'sine',0.15,0.2,t,c);playTone(660,'sine',0.12,0.18,t+0.15,c);}catch(e){}}
+};
+
+// Mobil scroll sırasında yanlışlıkla alım-satımı engelle
+document.addEventListener('touchmove',()=>{touchMoved=true;if(holdTimer){clearTimeout(holdTimer);holdTimer=null;}},{passive:true});
+
+// ═══════════════════════════════════════════════════════
+// DİL & PARA BİRİMİ YARDIMCILARI
+// ═══════════════════════════════════════════════════════
+function L(tr,en){return langEN?en:tr;}
+function CUR(){return langEN?'$':'₺';}
+
+// ═══════════════════════════════════════════════════════
+// MİLESTONE'LAR
+// ═══════════════════════════════════════════════════════
+const milestones=[
+  {id:'m1', title:'Çaylak',              titleEN:'Rookie',               desc:'100.000₺ nakit paraya ulaş.',            descEN:'Reach 100,000₺ in cash.',               bonus:10000,  unlocked:false, check:()=>money>=100000},
+  {id:'m2', title:'Zaman Yolcusu',       titleEN:'Time Traveler',        desc:'30. günü geride bırak.',                 descEN:'Leave day 30 behind.',                  bonus:15000,  unlocked:false, check:()=>day>=30},
+  {id:'m3', title:'Balina',              titleEN:'Whale',                desc:'Tek seferde 50k+ işlem yap.',            descEN:'Make a single trade worth 50k+.',        bonus:20000,  unlocked:false, check:()=>false},
+  {id:'m4', title:'Borç Yiğidin Kamçısı',titleEN:'Debt Warrior',         desc:'İlk kez kredi çek.',                     descEN:'Take a loan for the first time.',        bonus:5000,   unlocked:false, check:()=>debt>0},
+  {id:'m5', title:'Haber Kurdu',         titleEN:'News Hound',           desc:'Tüyolu üründen karla çık.',              descEN:'Exit a tipped stock in profit.',         bonus:25000,  unlocked:false, check:()=>false},
+  {id:'m6', title:'Elmas Eller',         titleEN:'Diamond Hands',        desc:'Bir üründe 50 stoğa ulaş.',              descEN:'Hold 50 shares of one stock.',           bonus:30000,  unlocked:false, check:()=>products.some(p=>p.stock>=50)},
+  {id:'m7', title:'Risk Sever',          titleEN:'Risk Taker',           desc:'300.000₺ borca ulaş.',                   descEN:'Reach 300,000₺ in debt.',               bonus:40000,  unlocked:false, check:()=>debt>=300000},
+  {id:'m8', title:'Portföy Mimarı',      titleEN:'Portfolio Architect',  desc:'5 farklı üründe stoğun olsun.',          descEN:'Hold stocks in 5 different assets.',     bonus:50000,  unlocked:false, check:()=>products.filter(p=>p.stock>0).length>=5},
+  {id:'m9', title:'Borsa Kaplanı',       titleEN:'Market Tiger',         desc:'1.000.000₺ hedefine ulaş.',              descEN:'Reach the 1,000,000₺ goal.',            bonus:100000, unlocked:false, check:()=>money>=1000000},
+  // Ticaret başarımları
+  {id:'t1', title:'Tüccar',              titleEN:'Merchant',             desc:'İlk ticaret ürünü al.',                  descEN:'Buy your first trade item.',             bonus:8000,   unlocked:false, check:()=>tradeItems.some(t=>t.stock>0)},
+  {id:'t2', title:'Çarşı Efendisi',      titleEN:'Bazaar Lord',          desc:'Ticaretten toplam 100.000₺ kâr et.',     descEN:'Earn 100,000₺ profit from trade.',       bonus:30000,  unlocked:false, check:()=>totalTradeProfit>=100000},
+  {id:'t3', title:'Altın Tacir',         titleEN:'Gold Trader',          desc:'5 adet Altın stokla.',                   descEN:'Hold 5 units of Gold.',                  bonus:25000,  unlocked:false, check:()=>{let g=tradeItems.find(t=>t.name==='Altın'||t.name==='Gold');return g&&g.stock>=5;}},
+  {id:'t4', title:'Lüks Uzmanı',         titleEN:'Luxury Expert',        desc:'Lüks Saat ve Araba birlikte tut.',       descEN:'Hold both Luxury Watch and Car.',        bonus:40000,  unlocked:false, check:()=>{let s=tradeItems.find(t=>t.nameTR==='Lüks Saat');let c=tradeItems.find(t=>t.nameTR==='Araba');return s&&s.stock>0&&c&&c.stock>0;}},
+  // Gayrimenkul başarımları
+  {id:'r1', title:'Ev Sahibi',           titleEN:'Property Owner',       desc:'İlk gayrimenkulü satın al.',             descEN:'Buy your first property.',              bonus:15000,  unlocked:false, check:()=>realEstateItems.some(r=>r.stock>0)},
+  {id:'r2', title:'Rant Makinesi',       titleEN:'Rent Machine',         desc:'Toplam 50.000₺ kira geliri elde et.',    descEN:'Earn 50,000₺ total rental income.',     bonus:35000,  unlocked:false, check:()=>totalRentEarned>=50000},
+  {id:'r3', title:'Gayrimenkul Baronu',  titleEN:'Real Estate Baron',    desc:'3 farklı mülk aynı anda tut.',           descEN:'Hold 3 different properties at once.',   bonus:60000,  unlocked:false, check:()=>realEstateItems.filter(r=>r.stock>0).length>=3},
+  {id:'r4', title:'Arsa Spekülatörü',    titleEN:'Land Speculator',      desc:'Bir arsayı 2 katı fiyata sat.',           descEN:'Sell a plot at 2x the purchase price.',  bonus:50000,  unlocked:false, check:()=>false},
+  {id:'r5', title:'Emlak İmparatorluğu', titleEN:'Real Estate Empire',   desc:'Gayrimenkulden 500.000₺ kâr et.',        descEN:'Earn 500,000₺ from real estate.',        bonus:100000, unlocked:false, check:()=>totalRealEstateProfit>=500000},
+  // Şans başarımları
+  {id:'lk1',title:'Şans Deneycisi',      titleEN:'Risk Tester',          desc:'İlk şans oyununu oyna.',                 descEN:'Play your first luck game.',            bonus:5000,   unlocked:false, check:()=>totalLuckLost>0},
+  {id:'lk2',title:'Kumar Bağımlısı',     titleEN:'High Roller',          desc:'Şansa toplam 100.000₺ harca.',           descEN:'Spend 100,000₺ total on luck games.',   bonus:20000,  unlocked:false, check:()=>totalLuckLost>=100000},
+  {id:'lk3',title:'Talih Kuşu',          titleEN:'Lucky Star',           desc:'Şans oyunlarından 200.000₺ kazan.',      descEN:'Win 200,000₺ from luck games.',         bonus:50000,  unlocked:false, check:()=>totalLuckGain>=200000},
+];
+
+// ═══════════════════════════════════════════════════════
+// ÖZEL OLAYLAR (30 senaryo)
+// ═══════════════════════════════════════════════════════
+const specialEvents=[
+  {nameTR:'Vergi Affı',         nameEN:'Tax Amnesty',        textTR:'Hükümet borçları siliyor!',              textEN:'Government is wiping out debts!',           action:()=>{let s=debt*0.20;debt-=s;return L(`Borcunun %20'si (${fmt(s)}₺) silindi!`,`20% of your debt ($${fmt(s)}) was wiped!`);}},
+  {nameTR:'Servet Vergisi',     nameEN:'Wealth Tax',         textTR:'Zenginlerden ek vergi alındı.',          textEN:'Extra tax levied on the wealthy.',           action:()=>{if(money>500000){let v=money*0.05;money-=v;return L(`Parandan %5 (${fmt(v)}₺) kesildi.`,`5% ($${fmt(v)}) was deducted from your cash.`);}return L('Nakit limitin altında olduğu için vergiden muaf kaldın.','You were exempt from tax as your cash is below the limit.');}},
+  {nameTR:'Borsa Tatili',       nameEN:'Market Holiday',     textTR:'Sistem arızası, işlemler durdu!',        textEN:'System failure, trading halted!',           action:()=>{isBorsaHoliday=true;return L('Bugün Al/Sat kilitlendi!','Buy/Sell is locked for today!');}},
+  {nameTR:'Bayram İkramiyesi',  nameEN:'Holiday Bonus',      textTR:'Devletten herkese destek!',              textEN:'Government support for everyone!',          action:()=>{let bonus=millionaireMode?500000:5000;money+=bonus;return L(`${fmt(bonus)}₺ nakit yattı.`,`$${fmt(bonus)} cash deposited.`);}},
+  {nameTR:'Deprem Sigortası',   nameEN:'Earthquake Insurance',textTR:'Gayrimenkullerine sigorta tazminatı geldi!',textEN:'Insurance compensation for your properties!',action:()=>{let owned=realEstateItems.filter(r=>r.stock>0).length;let bonus=owned*(millionaireMode?1000000:10000);money+=bonus;return L(`${owned} mülk için ${fmt(bonus)}₺ tazminat.`,`$${fmt(bonus)} compensation for ${owned} properties.`);}},
+  {nameTR:'İnşaat Maliyeti',    nameEN:'Construction Cost',  textTR:'Beklenmedik tadilat masrafı!',           textEN:'Unexpected renovation cost!',              action:()=>{let base=millionaireMode?2000000:20000;let cost=base+Math.floor(Math.random()*(millionaireMode?3000000:30000));money-=cost;return L(`${fmt(cost)}₺ tadilat masrafı kesildi.`,`$${fmt(cost)} renovation cost deducted.`);}},
+  {nameTR:'Döviz Sıçraması',    nameEN:'Currency Spike',     textTR:'Döviz kurları fırladı, ticaret malları etkilendi!',textEN:'Exchange rates surged, trade goods affected!',action:()=>{tradeItems.forEach(t=>{t.price*=1.08;});return L('Ticaret ürünleri %8 değer kazandı!','Trade items gained 8% in value!');}},
+  {nameTR:'Enflasyon Dalgası',  nameEN:'Inflation Wave',     textTR:'Enflasyon yüksek, maliyetler arttı.',    textEN:'High inflation, costs increased.',          action:()=>{let v=money*0.03;money-=v;return L(`Enflasyon nedeniyle ${fmt(v)}₺ alım gücü kaybı.`,`Lost $${fmt(v)} in purchasing power due to inflation.`);}},
+  {nameTR:'Altın Çılgınlığı',   nameEN:'Gold Rush',          textTR:'Altın ve Gümüş fiyatları fırladı!',     textEN:'Gold and Silver prices surged!',            action:()=>{['Altın','Gümüş','Gold','Silver'].forEach(n=>{let t=tradeItems.find(x=>x.nameTR===n||x.nameEN===n);if(t)t.price*=1.20;});return L('Altın ve Gümüş %20 değer kazandı!','Gold and Silver gained 20% in value!');}},
+  {nameTR:'Teknoloji Çöküşü',   nameEN:'Tech Crash',         textTR:'Teknoloji ürünleri büyük değer kaybetti!',textEN:'Tech products lost significant value!',    action:()=>{let t=tradeItems.find(x=>x.nameTR==='Teknoloji Ürünü');if(t)t.price*=0.70;return L('Teknoloji Ürünü %30 değer kaybetti!','Technology Product lost 30% in value!');}},
+  {nameTR:'Emlak Patlaması',    nameEN:'Property Boom',      textTR:'Konut fiyatları tüm zamanların rekorunu kırdı!',textEN:'Property prices hit all-time high!', action:()=>{realEstateItems.forEach(r=>{r.price*=1.10;});return L('Tüm gayrimenkuller %10 değer kazandı!','All properties gained 10% in value!');}},
+  {nameTR:'Kira Grevi',         nameEN:'Rent Strike',        textTR:'Kiracılar bu ay kira ödemedi!',          textEN:'Tenants refused to pay rent this month!',  action:()=>{return L('Bu günkü kira gelirleri iptal edildi.','Today\'s rental income has been cancelled. (No effect on future rent)');}},
+  {nameTR:'Liman Grevi',        nameEN:'Port Strike',        textTR:'Liman grevinden ticaret malları etkilendi.',textEN:'Trade goods affected by port strike.',  action:()=>{tradeItems.forEach(t=>{t.price*=0.94;});return L('Ticaret ürünleri %6 değer kaybetti.','Trade items lost 6% in value.');}},
+  {nameTR:'Kredi Genişlemesi',  nameEN:'Credit Expansion',   textTR:'Merkez bankası faizleri düşürdü!',       textEN:'Central bank cut interest rates!',         action:()=>{if(debt>0){let relief=debt*0.05;debt-=relief;return L(`Borcundan %5 (${fmt(relief)}₺) indirim yapıldı!`,`5% ($${fmt(relief)}) discount applied to your debt!`);}return L('Borç yoktu, fırsat kaçtı!','No debt to benefit from!');}},
+  {nameTR:'Şanslı Gün',         nameEN:'Lucky Day',          textTR:'Bugün şansın açık, piyasalar sana güldü!',textEN:'It\'s your lucky day, markets smiled at you!',action:()=>{let base=millionaireMode?1000000:10000;let bonus=base+Math.floor(Math.random()*(millionaireMode?2000000:20000));money+=bonus;return L(`Şans bonusu: ${fmt(bonus)}₺!`,`Luck bonus: $${fmt(bonus)}!`);}},
+];
+// ── MİLYONER MODA ÖZEL OLAYLAR — Nakit bazlı (18 adet) ─────────────────
+const millionaireEvents=[
+  {nameTR:'Hazine Bonosu Getirisi', nameEN:'Treasury Bond Return',
+   textTR:'Hazine bonolarından beklenmedik yüksek getiri!', textEN:'Unexpectedly high return from treasury bonds!',
+   action:()=>{let bonus=1000000+Math.floor(Math.random()*4000000);money+=bonus;return L(`💰 ${fmt(bonus)}₺ hazine bonosu getirisi hesabına yatırıldı!`,`💰 $${fmt(bonus)} treasury bond return deposited!`);}},
+  {nameTR:'Vergi Cezası', nameEN:'Tax Penalty',
+   textTR:'Vergi denetimi! Beyan hatası tespit edildi.', textEN:'Tax audit! Declaration error detected.',
+   action:()=>{let loss=2000000+Math.floor(Math.random()*6000000);money-=loss;return L(`📋 ${fmt(loss)}₺ vergi cezası ödendi!`,`📋 $${fmt(loss)} tax penalty paid!`);}},
+  {nameTR:'Miras', nameEN:'Inheritance',
+   textTR:'Uzak bir akrabadan beklenmedik miras!', textEN:'Unexpected inheritance from a distant relative!',
+   action:()=>{let bonus=5000000+Math.floor(Math.random()*15000000);money+=bonus;return L(`🎁 ${fmt(bonus)}₺ miras hesabına geçti!`,`🎁 $${fmt(bonus)} inheritance received!`);}},
+  {nameTR:'Dava Kaybedildi', nameEN:'Lost Lawsuit',
+   textTR:'Mahkeme kararı aleyhine! Tazminat ödenecek.', textEN:'Court ruled against you! Compensation to be paid.',
+   action:()=>{let loss=5000000+Math.floor(Math.random()*10000000);money-=loss;return L(`⚖️ ${fmt(loss)}₺ tazminat ödendi!`,`⚖️ $${fmt(loss)} compensation paid!`);}},
+  {nameTR:'İlaç Patenti Geliri', nameEN:'Drug Patent Revenue',
+   textTR:'Yıllarca geliştirilen patent lisanslandı!', textEN:'Years-developed patent successfully licensed!',
+   action:()=>{let bonus=3000000+Math.floor(Math.random()*4000000);money+=bonus;return L(`💊 ${fmt(bonus)}₺ patent lisans geliri!`,`💊 $${fmt(bonus)} patent license revenue!`);}},
+  {nameTR:'Depo Yangını', nameEN:'Warehouse Fire',
+   textTR:'Depoda çıkan yangın büyük hasara yol açtı!', textEN:'Fire in the warehouse caused major damage!',
+   action:()=>{let loss=3000000+Math.floor(Math.random()*7000000);money-=loss;return L(`🔥 ${fmt(loss)}₺ yangın hasarı!`,`🔥 $${fmt(loss)} fire damage!`);}},
+  {nameTR:'Girişimci Ödülü', nameEN:'Entrepreneur Award',
+   textTR:'Yılın en başarılı yatırımcısı seçildin!', textEN:'Selected as the most successful investor of the year!',
+   action:()=>{let bonus=2000000;money+=bonus;return L(`🏆 ${fmt(bonus)}₺ ödül ve sponsorluk geliri!`,`🏆 $${fmt(bonus)} award and sponsorship income!`);}},
+  {nameTR:'Kart Dolandırıcılığı', nameEN:'Card Fraud',
+   textTR:'Hesaplarında şüpheli işlem tespit edildi!', textEN:'Suspicious transaction detected in your accounts!',
+   action:()=>{let loss=1000000+Math.floor(Math.random()*3000000);money-=loss;return L(`💳 ${fmt(loss)}₺ dolandırıcılık zararı!`,`💳 $${fmt(loss)} fraud loss!`);}},
+  {nameTR:'Yatırım Fonu Kârı', nameEN:'Investment Fund Profit',
+   textTR:'Yönettiğin fon rekor kâr açıkladı!', textEN:'The fund you manage reported record profit!',
+   action:()=>{let bonus=4000000+Math.floor(Math.random()*6000000);money+=bonus;return L(`📈 ${fmt(bonus)}₺ fon yönetim kârı!`,`📈 $${fmt(bonus)} fund management profit!`);}},
+  {nameTR:'Sel Felaketi Tazminatı', nameEN:'Flood Disaster Compensation',
+   textTR:'Sel felaketi mülklerine zarar verdi!', textEN:'Flood disaster damaged your properties!',
+   action:()=>{let loss=2000000+Math.floor(Math.random()*4000000);money-=loss;return L(`🌊 ${fmt(loss)}₺ sel hasarı tazminatı ödendi!`,`🌊 $${fmt(loss)} flood damage compensation paid!`);}},
+  {nameTR:'Kripto Arbitraj Fırsatı', nameEN:'Crypto Arbitrage Opportunity',
+   textTR:'Kısa süreli fiyat farkını değerlendirdin!', textEN:'You exploited a brief price discrepancy!',
+   action:()=>{let bonus=2000000+Math.floor(Math.random()*8000000);money+=bonus;return L(`🪙 ${fmt(bonus)}₺ kripto arbitraj kârı!`,`🪙 $${fmt(bonus)} crypto arbitrage profit!`);}},
+  {nameTR:'Sigorta Dolandırıcılığı Cezası', nameEN:'Insurance Fraud Penalty',
+   textTR:'Sigorta şirketi sahte talep tespit etti!', textEN:'Insurance company detected a fraudulent claim!',
+   action:()=>{let loss=3000000+Math.floor(Math.random()*5000000);money-=loss;return L(`🚨 ${fmt(loss)}₺ sigorta cezası!`,`🚨 $${fmt(loss)} insurance penalty!`);}},
+  {nameTR:'Gayrimenkul Kira Geliri Artışı', nameEN:'Rental Income Boost',
+   textTR:'Hükümet kira desteği açıkladı!', textEN:'Government announced rental support!',
+   action:()=>{let bonus=1500000+Math.floor(Math.random()*3500000);money+=bonus;return L(`🏠 ${fmt(bonus)}₺ kira destek ödemesi!`,`🏠 $${fmt(bonus)} rental support payment!`);}},
+  {nameTR:'Gümrük Cezası', nameEN:'Customs Penalty',
+   textTR:'İthalat beyannamende hata tespit edildi!', textEN:'Error detected in your import declaration!',
+   action:()=>{let loss=2500000+Math.floor(Math.random()*4500000);money-=loss;return L(`🚢 ${fmt(loss)}₺ gümrük cezası!`,`🚢 $${fmt(loss)} customs penalty!`);}},
+  {nameTR:'Ar-Ge Teşviki', nameEN:'R&D Incentive',
+   textTR:'TÜBİTAK araştırma projen için hibe onayladı!', textEN:'TUBITAK approved a grant for your research project!',
+   action:()=>{let bonus=3000000+Math.floor(Math.random()*5000000);money+=bonus;return L(`🔬 ${fmt(bonus)}₺ Ar-Ge hibesi hesabına aktarıldı!`,`🔬 $${fmt(bonus)} R&D grant transferred!`);}},
+  {nameTR:'Banka Sistemine Saldırı', nameEN:'Banking System Hack',
+   textTR:'Bankacılık sistemine saldırı! Geçici kayıplar!', textEN:'Banking system hacked! Temporary losses!',
+   action:()=>{let loss=4000000+Math.floor(Math.random()*8000000);money-=loss;return L(`💻 ${fmt(loss)}₺ siber saldırı zararı!`,`💻 $${fmt(loss)} cyber attack loss!`);}},
+  {nameTR:'Döviz Kur Farkı Kazancı', nameEN:'Forex Gain',
+   textTR:'Döviz dengeleme işlemlerinden beklenmedik kâr!', textEN:'Unexpected profit from foreign exchange operations!',
+   action:()=>{let bonus=2000000+Math.floor(Math.random()*6000000);money+=bonus;return L(`💱 ${fmt(bonus)}₺ kur farkı kârı!`,`💱 $${fmt(bonus)} forex gain!`);}},
+  {nameTR:'Çevre Kirliliği Cezası', nameEN:'Environmental Fine',
+   textTR:'Çevre kurumu işletmene ağır ceza kesti!', textEN:'Environmental agency issued a heavy fine on your business!',
+   action:()=>{let loss=5000000+Math.floor(Math.random()*10000000);money-=loss;return L(`🌿 ${fmt(loss)}₺ çevre cezası ödendi!`,`🌿 $${fmt(loss)} environmental fine paid!`);}},
+];
+
+// Ek 15 senaryo + eski döngü olayları
+const loopEvents=[];
+for(let i=0;i<56;i++){
+  loopEvents.push({
+    nameTR:i%2===0?'Ekonomi Paketi':'Gider Masrafı',
+    nameEN:i%2===0?'Economic Package':'Unexpected Expense',
+    textTR:i%2===0?'Piyasalar canlanıyor!':'Beklenmedik faturalar geldi.',
+    textEN:i%2===0?'Markets are picking up!':'Unexpected bills arrived.',
+    action:i%2===0
+      ?()=>{money+=1000+(i*100);return L(`${1000+(i*100)}₺ ek gelir.`,`$${1000+(i*100)} extra income.`);}
+      :()=>{money-=500+(i*50);return L(`${500+(i*50)}₺ masraf çıktı.`,`$${500+(i*50)} expense incurred.`);}
+  });
+}
+const allEvents=[...specialEvents,...loopEvents];
+const allMillionaireEvents=[...specialEvents,...millionaireEvents];
+
+// ═══════════════════════════════════════════════════════
+// HABER HAVUZU
+// ═══════════════════════════════════════════════════════
+const newsLibrary={
+  positive:['yeni bir teknolojik devrim hazırlığında!','için dev bir yatırım fonu alım yaptı.','sektördeki rakiplerini satın alıyor.','hakkında büyük bir hype oluştu.','için yasal onay geldi!','rekor kâr açıkladı, analistler şaşkın!','uluslararası bir ortaklık imzaladı.','yeni nesil ürün lansmanı büyük ilgi gördü.','ana rakibinin pazar payını ele geçirdi.','vergi teşvikinden en çok yararlanan şirket oldu.','devlet ihalesi kazandı, sipariş defteri dolup taştı.','yabancı yatırımcı ilgisi tavan yaptı!','CEO\'su \'yılın girişimcisi\' ödülü aldı.','güçlü bilanço açıkladı, hedef fiyat yukarı revize edildi.','stratejik rezervlerini artırdı, sektörde güven arttı.'],
+  negative:['hakkında yolsuzluk iddiaları var!','ağında güvenlik açığı tespit edildi.','CEO\'su tüm hisselerini sattı.','kâr marjı beklentinin altında.','delist edilme riskiyle karşı karşıya!','büyük müşterisini rakibine kaptırdı.','muhasebe skandalı patlak verdi!','düzenleyici kurum soruşturma başlattı.','fabrikasında yangın çıktı, üretim durdu.','tahvil notu düşürüldü, borçlanma maliyeti arttı.','çalışan grevi üretimi felç etti.','ana tedarikçisi iflasını açıkladı.','yönetim kurulunda büyük çalkantı yaşanıyor.','kötü hava koşulları operasyonları aksattı.','döviz kuru baskısı marjları eritiyor.'],
+  positiveEN:['is preparing a new technological revolution!','attracted a major investment fund purchase.','is acquiring its sector rivals.','has generated massive hype.','received regulatory approval!','reported record profits, analysts stunned!','signed an international partnership.','next-gen product launch attracted huge interest.','captured its main rival\'s market share.','was the top beneficiary of tax incentives.','won a government contract, order book is full.','foreign investor interest hit the roof!','CEO received \'entrepreneur of the year\' award.','released strong financials, target price revised up.','increased strategic reserves, sector confidence grew.'],
+  negativeEN:['is facing corruption allegations!','a security vulnerability was detected in its network.','CEO sold all their shares.','profit margin fell below expectations.','is at risk of being delisted!','lost its major client to a competitor.','an accounting scandal has erupted!','a regulatory body has launched an investigation.','a fire broke out at its factory, production halted.','credit rating downgraded, borrowing costs rose.','a worker strike has paralyzed production.','main supplier declared bankruptcy.','major turmoil is ongoing in the board of directors.','bad weather conditions disrupted operations.','currency pressure is eroding margins.']
+};
+
+// ═══════════════════════════════════════════════════════
+// HİSSE SENETLERİ
+// ═══════════════════════════════════════════════════════
+let products=[
+  {name:'ADAUS', price:15000,maxUp:0.25,maxDown:0.15,color:'#3498db',totalProfit:0,infoTR:'ADAUS A.Ş., 2003 yılında kurulan ve otomotiv yedek parça sektörünün lider oyuncularından biridir. 40\'tan fazla ülkeye ihracat yaparak büyümesini sürdürmektedir.',infoEN:'ADAUS Inc., founded in 2003, is one of the leading players in the automotive spare parts sector. It continues to grow by exporting to more than 40 countries.'},
+  {name:'BAUM',  price:7000, maxUp:0.20,maxDown:0.15,color:'#e67e22',totalProfit:0,infoTR:'BAUM Gıda, Türkiye\'nin en büyük organik tarım holdinglerinden biridir. 2008 krizinden güçlenerek çıkmış; bugün 12 ülkede mağaza zinciri işletmektedir.',infoEN:'BAUM Food is one of Turkey\'s largest organic agriculture holdings. It emerged stronger from the 2008 crisis and today operates a store chain in 12 countries.'},
+  {name:'NOUN',  price:1100, maxUp:1.05,maxDown:0.60,color:'#9b59b6',totalProfit:0,infoTR:'NOUN Teknoloji, yapay zeka destekli lojistik yazılımlar geliştiren bir startup\'tan büyüyerek borsaya açılmıştır. Yüksek volatilitesiyle spekülatif yatırımcıların gözdesidir.',infoEN:'NOUN Technology grew from a startup developing AI-powered logistics software to go public. It is a favorite of speculative investors due to its high volatility.'},
+  {name:'SAAD',  price:650,  maxUp:0.15,maxDown:0.10,color:'#1abc9c',totalProfit:0,infoTR:'SAAD Enerji, yenilenebilir enerji santrallerine odaklanan bir kamu-özel ortaklığıdır. İstikrarlı temettü politikasıyla uzun vadeli yatırımcılar arasında popülerdir.',infoEN:'SAAD Energy is a public-private partnership focused on renewable energy plants. It is popular among long-term investors for its stable dividend policy.'},
+  {name:'PADZ',  price:40,   maxUp:0.30,maxDown:0.15,color:'#f1c40f',totalProfit:0,infoTR:'PADZ Yazılım, küçük ve orta ölçekli işletmelere bulut tabanlı muhasebe çözümleri sunar. Abonelik modeliyle büyüyen şirket, SaaS pazarında hızla pay kapıyor.',infoEN:'PADZ Software offers cloud-based accounting solutions to SMBs. Growing with a subscription model, the company is rapidly gaining SaaS market share.'},
+  {name:'KOLII', price:15,   maxUp:1.00,maxDown:0.80,color:'#e74c3c',totalProfit:0,infoTR:'KOLII Kripto Altyapı, blok zinciri ödeme sistemleri üzerine kurulu riskli bir girişimdir. Ekstrem fiyat hareketleriyle tanınır.',infoEN:'KOLII Crypto Infrastructure is a risky venture built on blockchain payment systems. Known for extreme price movements.'},
+  {name:'LATN',  price:100,  maxUp:0.10,maxDown:0.08,color:'#2ecc71',totalProfit:0,infoTR:'LATN Sigorta, 1987 yılında kurulan köklü bir hayat ve sağlık sigortacısıdır. Düşük volatilitesi ve güçlü öz kaynakları ile güvenli liman hissesi olarak bilinir.',infoEN:'LATN Insurance is a well-established life and health insurer founded in 1987. Known as a safe-haven stock with low volatility.'},
+  {name:'MELLE', price:45000,maxUp:0.15,maxDown:0.10,color:'#34495e',totalProfit:0,infoTR:'MELLE Holding, inşaat, turizm ve finans alanlarında faaliyet gösteren bir aile şirketidir. Güçlü defter değeri ile premium yatırımcıların tercihi.',infoEN:'MELLE Holding is a family-owned company in construction, tourism, and finance. A top choice for premium investors due to its strong book value.'},
+  {name:'TAPA',  price:180,  maxUp:0.10,maxDown:0.05,color:'#d35400',totalProfit:0,infoTR:'TAPA Tekstil, Ege ihracat bölgesinin köklü üreticilerinden biridir. Avro cinsinden geliri sayesinde kur artışlarından olumlu etkilenir.',infoEN:'TAPA Textile is one of the established producers in the Aegean export region. It benefits from currency appreciation via its euro-denominated revenues.'},
+  {name:'REKNA', price:50,   maxUp:0.50,maxDown:0.20,color:'#27ae60',totalProfit:0,infoTR:'REKNA Biyoteknoloji, kanser ilaçları üzerine araştırma yapan genç bir şirkettir. FDA onay süreçleri fiyatı sert etkiler.',infoEN:'REKNA Biotechnology is a young company researching cancer drugs. FDA approval processes sharply impact the price.'},
+  {name:'STAPN', price:30,   maxUp:0.10,maxDown:0.03,color:'#8e44ad',totalProfit:0,infoTR:'STAPN Su Yönetimi, şehir su altyapısı projelerinde uzmanlaşmış savunmacı bir kamu hizmetleri şirketidir.',infoEN:'STAPN Water Management is a defensive public utility specializing in urban water infrastructure projects.'},
+  {name:'LIRNA', price:2200, maxUp:0.15,maxDown:0.05,color:'#c0392b',totalProfit:0,infoTR:'LIRNA Medya, dijital yayıncılık ve içerik platformları alanındaki büyümesiyle dikkat çekmektedir.',infoEN:'LIRNA Media stands out with its growth in digital broadcasting and content platforms.'},
+  {name:'PELK',  price:2700, maxUp:0.03,maxDown:0.02,color:'#16a085',totalProfit:0,infoTR:'PELK Bankacılık, Türkiye\'nin en büyük özel bankalarından biridir. Düşük volatilitesiyle portföyde dengeleyici rol üstlenir.',infoEN:'PELK Banking is one of Turkey\'s largest private banks. It plays a balancing role in portfolios with its low volatility.'},
+  {name:'HOUZ',  price:250,  maxUp:0.12,maxDown:0.05,color:'#e91e63',totalProfit:0,infoTR:'HOUZ Gayrimenkul, konut ve ofis projelerinde uzmanlaşmış bir Türk inşaat şirketidir.',infoEN:'HOUZ Real Estate is a Turkish construction company specializing in residential and office projects.'},
+  {name:'MORITI',price:450,  maxUp:0.20,maxDown:0.12,color:'#00bcd4',totalProfit:0,infoTR:'MORITI Lojistik, e-ticaret patlamasının rüzgarını arkasına alan son mil teslimat devlerinden biridir.',infoEN:'MORITI Logistics is one of the last-mile delivery giants riding the e-commerce boom.'},
+  {name:'GALT',  price:1350, maxUp:0.15,maxDown:0.09,color:'#ff9800',totalProfit:0,infoTR:'GALT Savunma, insansız hava araçları ve akıllı silah sistemleri üreticisidir.',infoEN:'GALT Defense is a manufacturer of unmanned aerial vehicles and smart weapon systems.'},
+  {name:'ROBX',  price:3300, maxUp:0.22,maxDown:0.15,color:'#9c27b0',totalProfit:0,infoTR:'ROBX Robotik, endüstriyel otomasyon ve yapay zeka entegre üretim sistemleri geliştirmektedir.',infoEN:'ROBX Robotics develops industrial automation and AI-integrated manufacturing systems.'},
+  {name:'AABL',  price:180,  maxUp:0.10,maxDown:0.09,color:'#4caf50',totalProfit:0,infoTR:'AABL Tarım İlaçları, Türkiye\'nin en büyük zirai ilaç ve gübre üreticilerinden biridir.',infoEN:'AABL Agrochemicals is one of Turkey\'s largest producers of agricultural pesticides and fertilizers.'},
+  {name:'BADTL', price:290,  maxUp:0.35,maxDown:0.10,color:'#f44336',totalProfit:0,infoTR:'BADTL Madencilik, nadir toprak elementleri ve lityum çıkarmaya odaklanan yüksek potansiyelli bir ham madde şirketidir.',infoEN:'BADTL Mining is a high-potential raw materials company focused on rare earth elements and lithium extraction.'},
+  {name:'ZOAGG', price:530,  maxUp:0.45,maxDown:0.25,color:'#607d8b',totalProfit:0,infoTR:'ZOAGG Kripto Borsası, dijital varlık ticareti için altyapı ve aracılık hizmeti sunan spekülatif bir fintech şirketidir.',infoEN:'ZOAGG Crypto Exchange is a speculative fintech providing infrastructure for digital asset trading.'},
+];
+
+// ═══════════════════════════════════════════════════════
+// TİCARET ÜRÜNLERİ
+// ═══════════════════════════════════════════════════════
+let tradeItems=[
+  {nameTR:'İnşaat Demiri', nameEN:'Steel Rebar',       price:17000,  liveUp:0.03,liveDown:0.02,dayUp:0.15,dayDown:0.05,color:'#78909c',stock:0,avg:0,history:[17000], lastPrice:17000,totalProfit:0,
+   infoTR:'İnşaat sektörünün temel hammaddesi. Konut projeleri ve altyapı yatırımlarının yoğunluğuna göre talep dalgalanır.',infoEN:'The fundamental raw material of the construction sector. Demand fluctuates with housing projects and infrastructure investments.'},
+  {nameTR:'Lüks Saat',    nameEN:'Luxury Watch',       price:250000, liveUp:0.01,liveDown:0.02,dayUp:0.10,dayDown:0.05,color:'#ffd700',stock:0,avg:0,history:[250000],lastPrice:250000,totalProfit:0,
+   infoTR:'İsviçre üretimi üst segment saatler. Koleksiyoncular ve hediye alımlarıyla stabil değer koruyan güvenli bir varlık.',infoEN:'Swiss-made high-end timepieces. A stable value asset protected by collectors and gift purchases.'},
+  {nameTR:'Araba',         nameEN:'Car',                price:2500000,liveUp:0.03,liveDown:0.02,dayUp:0.25,dayDown:0.15,color:'#ef5350',stock:0,avg:0,history:[2500000],lastPrice:2500000,totalProfit:0,
+   infoTR:'Üst segment otomobil. Döviz kuruna ve ÖTV politikalarına duyarlı; spekülatif dönemlerde hızlı değer kazanabilir.',infoEN:'Premium automobile. Sensitive to exchange rates and special consumption tax; can gain value rapidly in speculative periods.'},
+  {nameTR:'Tekne/Yat',     nameEN:'Yacht',              price:5500000,liveUp:0.02,liveDown:0.01,dayUp:0.35,dayDown:0.05,color:'#29b6f6',stock:0,avg:0,history:[5500000],lastPrice:5500000,totalProfit:0,
+   infoTR:'Deniz yatırımı. Turistik sezonlarda talep patlar; kış aylarında ise değer kaybı yaşanabilir.',infoEN:'Maritime investment. Demand explodes in tourist seasons; value loss may occur in winter months.'},
+  {nameTR:'Lüks Mobilya',  nameEN:'Luxury Furniture',   price:1250000,liveUp:0.04,liveDown:0.01,dayUp:0.25,dayDown:0.15,color:'#a1887f',stock:0,avg:0,history:[1250000],lastPrice:1250000,totalProfit:0,
+   infoTR:'El yapımı İtalyan mobilyalar. Rezidans ve villa projelerinin tamamlanmasıyla birlikte talep ani yükselişler gösterir.',infoEN:'Handmade Italian furniture. Demand shows sudden spikes as residence and villa projects are completed.'},
+  {nameTR:'Lüks Tekstil',  nameEN:'Luxury Textile',     price:320000, liveUp:0.02,liveDown:0.01,dayUp:0.45,dayDown:0.25,color:'#ce93d8',stock:0,avg:0,history:[320000], lastPrice:320000, totalProfit:0,
+   infoTR:'Haute couture ve premium marka tekstil ürünleri. Moda haftaları ve sezon geçişlerinde dramatik fiyat hareketleri yaşanır.',infoEN:'Haute couture and premium brand textiles. Dramatic price movements occur around fashion weeks and season transitions.'},
+  {nameTR:'Teknoloji Ürünü',nameEN:'Tech Product',      price:170000, liveUp:0.03,liveDown:0.10,dayUp:0.65,dayDown:0.25,color:'#00e5ff',stock:0,avg:0,history:[170000], lastPrice:170000, totalProfit:0,
+   infoTR:'Son nesil elektronik ve gadget\'lar. Yeni model çıkışları eski stoğu anında değersizleştirebilir; timing kritiktir.',infoEN:'Latest-gen electronics and gadgets. New model releases can instantly devalue old stock; timing is critical.'},
+  {nameTR:'Yedek Parça',   nameEN:'Spare Parts',        price:530000, liveUp:0.02,liveDown:0.10,dayUp:0.45,dayDown:0.15,color:'#80cbc4',stock:0,avg:0,history:[530000], lastPrice:530000, totalProfit:0,
+   infoTR:'Endüstriyel makine yedek parçaları. Tedarik zinciri krizlerinde fiyatlar katlanarak yükselir.',infoEN:'Industrial machine spare parts. Prices multiply during supply chain crises.'},
+  {nameTR:'Altın',          nameEN:'Gold',              price:250000, liveUp:0.01,liveDown:0.01,dayUp:0.30,dayDown:0.15,color:'#ffca28',stock:0,avg:0,history:[250000], lastPrice:250000, totalProfit:0,
+   infoTR:'Güvenli liman altın külçesi. Kriz dönemlerinde patlama yapabilecek klasik değer saklama aracı.',infoEN:'Safe-haven gold bullion. A classic store of value that can explode in crisis periods.'},
+  {nameTR:'Gümüş',          nameEN:'Silver',            price:150000, liveUp:0.02,liveDown:0.01,dayUp:0.40,dayDown:0.25,color:'#b0bec5',stock:0,avg:0,history:[150000], lastPrice:150000, totalProfit:0,
+   infoTR:'Hem endüstriyel hem yatırım amaçlı gümüş. Altına göre daha volatil ama potansiyel getirisi daha yüksek.',infoEN:'Silver used for both industrial and investment purposes. More volatile than gold but with higher potential returns.'},
+];
+
+// ═══════════════════════════════════════════════════════
+// GAYRİMENKUL
+// ═══════════════════════════════════════════════════════
+let realEstateItems=[
+  {nameTR:'1463 Ada 142 Parsel (Arsa)', nameEN:'Plot 1463/142',        price:2500000,  maxUp:1.40,maxDown:0.05,rentPerDay:2000,  stock:0,avg:0,history:[2500000], lastPrice:2500000, totalProfit:0, priceTimer:0,
+   infoTR:'İmar planına göre konut alanı olarak belirlenmiş arsa. Bölgede ilerleyen altyapı projeleri değer artışını hızlandırabilir.',infoEN:'Land designated as residential zone per zoning plan. Ongoing infrastructure projects in the area may accelerate value growth.'},
+  {nameTR:'123 Ada 16 Parsel (Arsa)',   nameEN:'Plot 123/16',          price:5500000,  maxUp:1.50,maxDown:0.35,rentPerDay:3000,  stock:0,avg:0,history:[5500000], lastPrice:5500000, totalProfit:0, priceTimer:0,
+   infoTR:'Merkezi konumlu ticari arsa. Yüksek geçiş trafiği ve çevre projeleri nedeniyle spekülatif ilgi yoğun.',infoEN:'Centrally located commercial land. Heavy speculative interest due to high traffic and surrounding projects.'},
+  {nameTR:'188 Ada 7 Parsel (Arsa)',    nameEN:'Plot 188/7',           price:25500000, maxUp:2.50,maxDown:0.25,rentPerDay:12000, stock:0,avg:0,history:[25500000],lastPrice:25500000,totalProfit:0, priceTimer:0,
+   infoTR:'Premium konumda büyük arsa. Devasa fiyat hareketi potansiyeli; uzun vadeli bekleyenler için ideal.',infoEN:'Large premium-location plot. Massive price movement potential; ideal for long-term holders.'},
+  {nameTR:'1042 Ada 25 Parsel (Arsa)',  nameEN:'Plot 1042/25',         price:7500000,  maxUp:0.80,maxDown:0.25,rentPerDay:15000, stock:0,avg:0,history:[7500000], lastPrice:7500000, totalProfit:0, priceTimer:0,
+   infoTR:'Sanayi bölgesi yakınında karma kullanımlı arsa. Fabrika ve depo kiralamalarından yüksek kira getirisi sağlar.',infoEN:'Mixed-use land near industrial zone. Generates high rental income from factory and warehouse leases.'},
+  {nameTR:'456 Ada 8 Parsel (Arsa)',    nameEN:'Plot 456/8',           price:500000,   maxUp:0.40,maxDown:0.15,rentPerDay:500,   stock:0,avg:0,history:[500000],  lastPrice:500000,  totalProfit:0, priceTimer:0,
+   infoTR:'Şehir dışı küçük arsa. Düşük giriş maliyetiyle portföye eklenir; kira getirisi mütevazı ama istikrarlı.',infoEN:'Small out-of-town plot. Added to portfolio at low entry cost; rental income is modest but stable.'},
+  {nameTR:'Tripleks Villa',             nameEN:'Triplex Villa',         price:33500000, maxUp:1.50,maxDown:0.20,rentPerDay:15000, stock:0,avg:0,history:[33500000],lastPrice:33500000,totalProfit:0, priceTimer:0,
+   infoTR:'Üst segment tripleks villa. Yaz tatili dönemlerinde kira talebi patlar; yıllık yüksek getiri sağlar.',infoEN:'Premium triplex villa. Rental demand explodes during summer holidays; provides high annual returns.'},
+  {nameTR:'Rezidans Loft Daire',        nameEN:'Residence Loft Apt.',   price:110000000,maxUp:3.50,maxDown:0.10,rentPerDay:10000, stock:0,avg:0,history:[110000000],lastPrice:110000000,totalProfit:0,priceTimer:0,
+   infoTR:'Mega projedeki prestijli loft daire. Yüksek giriş maliyeti karşılığında astronomik değer artış potansiyeli sunar.',infoEN:'Prestigious loft apartment in a mega project. High entry cost is offset by astronomical value appreciation potential.'},
+  {nameTR:'Depolu Dükkan',              nameEN:'Shop w/ Warehouse',     price:350000000,maxUp:2.50,maxDown:0.25,rentPerDay:20000, stock:0,avg:0,history:[350000000],lastPrice:350000000,totalProfit:0,priceTimer:0,
+   infoTR:'Lojistik merkezi yakınında büyük dükkan. En yüksek kira getirisine sahip mülk; büyük sermaye gerektirir.',infoEN:'Large shop near logistics center. The highest rental yield property in the portfolio; requires significant capital.'},
+];
+</script>
+</body>
+</html>
+<script>
+// ═══════════════════════════════════════════════════════
+// YARDIMCI FONKSİYONLAR
+// ═══════════════════════════════════════════════════════
+function fmt(n){return Math.floor(n).toLocaleString('tr-TR');}
+
+function getInterestRate(){
+  if(millionaireMode){
+    if(debt<=100000000) return 0.02;
+    if(debt<=300000000) return 0.03;
+    if(debt<=400000000) return 0.04;
+    return 0.05;
+  }
+  if(debt<=50000)  return 0.02;
+  if(debt<=100000) return 0.04;
+  if(debt<=200000) return 0.06;
+  if(debt<=300000) return 0.07;
+  return 0.085;
+}
+
+function switchTab(tab){
+  currentTab=tab;
+  ['stocks','trade','realestate','luck'].forEach(t=>{
+    document.getElementById('panel-'+t).style.display=t===tab?'':'none';
+    document.getElementById('tab-'+t).classList.toggle('active',t===tab);
+  });
+  const nb=document.getElementById('news-box');
+  if(nb) nb.style.display=tab==='stocks'?'':'none';
+  if(tab==='luck') renderLuck();
+}
+
+function showNamePopup(){document.getElementById('nameInputModal').style.display='flex';}
+
+// ── KÜFÜR FİLTRESİ ───────────────────────────────────────────────────────
+const BAD_WORDS=[
+  // Türkçe
+  'sik','oç','orospu','piç','göt','götveren','amk','amına','bok','yarrak','ibne','kezban',
+  'puşt','pezevenk','kahpe','orospu','sürtük','kaltak','gerizekalı','gerizekalı','aptal',
+  'salak','mal','dangalak','haysiyetsiz','serseri','kevaşe','kancık','çüş','götveren',
+  'oğlancı','dölsüz','bok','şerefsiz','namussuz','kaltakça','orospuçocuğu',
+  // İngilizce
+  'fuck','shit','bitch','asshole','cunt','dick','cock','pussy','nigger','faggot',
+  'whore','slut','bastard','motherfucker','fuckface','ass','prick','twat','wanker',
+  'retard','idiot','moron','dumbass','jackass','bullshit','damn','hell','crap'
+];
+function containsBadWord(str){
+  const clean=str.toLowerCase().replace(/[^a-zğüşıöçA-ZĞÜŞİÖÇ0-9]/g,'');
+  return BAD_WORDS.some(w=>clean.includes(w.toLowerCase().replace(/[^a-zğüşıöçA-ZĞÜŞİÖÇ0-9]/g,'')));
+}
+function sanitizeName(raw){
+  raw=(raw||'').trim();
+  if(!raw||containsBadWord(raw)){
+    // Oyuncu 001 formatında benzersiz isim ver
+    const num=String(Math.floor(Math.random()*900)+100);
+    return L('Oyuncu ','Player ')+num;
+  }
+  return raw.substring(0,30);
+}
+// ─────────────────────────────────────────────────────────────────────────
+
+let playerName='Trader';
+function confirmNameAndStart(){
+  playerName=sanitizeName(document.getElementById('playerNameInput').value);
+  document.getElementById('playerDisplay').innerText=playerName;
+  document.getElementById('nameInputModal').style.display='none';
+  document.getElementById('splashScreen').style.display='none';
+  init();
+}
+
+// ═══════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════
+function init(){
+  // Sadece yeni oyun başlatılınca kaydı temizle (continueGame bunu çağırmaz)
+  try{localStorage.removeItem('tgSave');}catch(e){}
+  if(millionaireMode){
+    money=50000000; totalDays=90; targetMoney=1000000000; bankLimit=500000000;
+    document.body.classList.add('millionaire-mode');
+    document.getElementById('moneyTarget').innerText=L(' / 🎯 1.000.000.000₺',' / 🎯 $1,000,000,000');
+    document.getElementById('day-limit').innerText=L(' / 90',' / 90');
+    document.getElementById('tabBar').style.display='flex';
+    // Milyoner modda trade/re panellerini başlat
+    document.getElementById('panel-trade').style.display='none';
+    document.getElementById('panel-realestate').style.display='none';
+    document.getElementById('panel-luck').style.display='none';
+    switchTab('stocks');
+  } else {
+    money=50000; totalDays=unlimitedMode?9999:60; targetMoney=1000000; bankLimit=500000;
+    document.body.classList.remove('millionaire-mode');
+    document.getElementById('tabBar').style.display='none';
+    // Normal modda trade/re panellerini gizle, stocks aktif ve görünür
+    document.getElementById('panel-trade').style.display='none';
+    document.getElementById('panel-realestate').style.display='none';
+    document.getElementById('panel-stocks').style.display='';
+    document.getElementById('news-box').style.display='';
+    currentTab='stocks';
+    if(!unlimitedMode){
+      document.getElementById('moneyTarget').style.display='';
+      document.getElementById('day-limit').style.display='';
+      document.getElementById('moneyTarget').innerText=L(' / 🎯 1.000.000₺',' / 🎯 $1,000,000');
+      document.getElementById('day-limit').innerText=L(' / 60',' / 60');
+    } else {
+      document.getElementById('moneyTarget').style.display='none';
+      document.getElementById('day-limit').style.display='none';
+    }
+  }
+  day=1; debt=0; totalInterestPaid=0;
+  peakCash=money; totalTrades=0; totalRentEarned=0; totalTradeProfit=0; totalRealEstateProfit=0;
+  totalLuckGain=0; totalLuckLost=0;
+  isBorsaHoliday=false; isCryptoNight=false;
+  pendingLottery=false; wheelUsedToday=false; lotteryTicketsBought=0; rentQueue=[];
+  document.body.classList.remove('crypto-night');
+  document.getElementById('mainTitle').innerText='TRADE GAME';
+  milestones.forEach(m=>m.unlocked=false);
+  products.forEach(p=>{p.stock=0;p.avg=0;p.history=[p.price];p.lastPrice=p.price;p.hasNews=false;p.totalProfit=0;p.delisted=false;});
+  tradeItems.forEach(t=>{t.stock=0;t.avg=0;t.history=[t.price];t.lastPrice=t.price;t.totalProfit=0;});
+  realEstateItems.forEach(r=>{r.stock=0;r.avg=0;r.history=[r.price];r.lastPrice=r.price;r.totalProfit=0;r.priceTimer=0;});
+  FIRMS.forEach(f=>{f.owned=false;f.purchaseCost=f.baseCost;f.investLevel=0;f.usedScenarios=[];});
+  document.getElementById('overlay').style.display='none';
+  document.getElementById('portfolioPopup').style.display='none';
+  setUpdateInterval(5000);
+  generateNews(); render();
+  // Mobil: oyun başlayınca body'e padding ver
+  document.body.style.paddingBottom = '70px';
+  startAutoDayTimer();
+}
+
+// ═══════════════════════════════════════════════════════
+// TIMER
+// ═══════════════════════════════════════════════════════
+function setUpdateInterval(speed){if(liveInterval)clearInterval(liveInterval);liveInterval=setInterval(liveUpdate,speed);}
+
+// ═══════════════════════════════════════════════════════
+// OTOMATİK GÜN TIMER
+// ═══════════════════════════════════════════════════════
+function startAutoDayTimer(){
+  if(autoRafId){ clearInterval(autoRafId); autoRafId=null; }
+  autoDayStart = Date.now();
+  const btn = document.getElementById('btnNextDay');
+  autoRafId = setInterval(()=>{
+    const elapsed = Date.now() - autoDayStart;
+    const pct = Math.min(elapsed / AUTO_DAY_MS * 100, 100);
+    if(btn) btn.style.setProperty('--day-progress', pct.toFixed(1)+'%');
+    if(elapsed >= AUTO_DAY_MS){
+      clearInterval(autoRafId); autoRafId=null;
+      nextDay();
+    }
+  }, 250);
+}
+function stopAutoDayTimer(){
+  if(autoRafId){ clearInterval(autoRafId); autoRafId=null; }
+  const btn = document.getElementById('btnNextDay');
+  if(btn) btn.style.setProperty('--day-progress','0%');
+}
+
+// ═══════════════════════════════════════════════════════
+// NEXT DAY
+// ═══════════════════════════════════════════════════════
+function nextDay(){
+  stopAutoDayTimer();
+  if(!unlimitedMode && !millionaireMode && day>=totalDays){
+    end(L('⛔ SÜRE DOLDU!','⛔ TIME\'S UP!'),L(`${totalDays} gün bitti. Hedefe ulaşamadın!`,`${totalDays} days are up. You didn't reach the goal!`));
+    return;
+  }
+  // Gün sayacını hemen güncelle
+  day++;
+  document.getElementById('day-display').innerText=day;
+  isBorsaHoliday=false; isCryptoNight=false;
+  wheelUsedToday=false; // Her oyun gününde çark sıfırla
+  document.body.classList.remove('crypto-night');
+  document.getElementById('mainTitle').innerText='TRADE GAME';
+  setUpdateInterval(5000);
+  if(debt>0){let interest=debt*getInterestRate();totalInterestPaid+=interest;debt+=interest;}
+
+  // Hisse fiyat güncellemesi
+  products.forEach((p,idx)=>{
+    if(p.delisted){if(Math.random()<0.08){p.delisted=false;p.price=1+Math.random()*4;p.lastPrice=p.price;p.history.push(p.price);if(p.history.length>30)p.history.shift();SFX.recover();}return;}
+    p.lastPrice=p.price;
+    let chg=(pendingEvent&&pendingEvent.productIdx===idx)?(pendingEvent.type==='UP'?pendingEvent.strength:-pendingEvent.strength):(Math.random()>0.5?Math.random()*p.maxUp:-Math.random()*p.maxDown);
+    p.price*=(1+chg);
+    if(p.price<=1){p.price=1;if(!p.delisted){p.delisted=true;SFX.delist();}}
+    p.history.push(p.price);if(p.history.length>30)p.history.shift();
+  });
+
+  // Ticaret fiyat güncellemesi
+  tradeItems.forEach(t=>{
+    t.lastPrice=t.price;
+    let chg=Math.random()>0.5?Math.random()*t.dayUp:-Math.random()*t.dayDown;
+    t.price*=(1+chg);if(t.price<1)t.price=1;
+    t.history.push(t.price);if(t.history.length>30)t.history.shift();
+  });
+
+  // Gayrimenkul fiyat güncellemesi (5 günde bir)
+  realEstateItems.forEach(r=>{
+    r.priceTimer++;
+    if(r.priceTimer>=5){
+      r.priceTimer=0;
+      r.lastPrice=r.price;
+      let chg=Math.random()>0.4?Math.random()*r.maxUp:-Math.random()*r.maxDown;
+      r.price*=(1+chg);if(r.price<1)r.price=1;
+    }
+    r.history.push(r.price);if(r.history.length>30)r.history.shift();
+    // Kira geliri
+    if(r.stock>0){
+      let rent=r.rentPerDay*r.stock;
+      money+=rent; totalRentEarned+=rent;
+      rentQueue.push({name:langEN?(r.nameEN||r.nameTR):r.nameTR, amount:rent, units:r.stock});
+    }
+  });
+
+  if(money>peakCash)peakCash=money;
+
+  // Firma günlük gelirleri (Milyoner Modu)
+  if(millionaireMode){
+    let firmIncome=0;
+    let firmNames=[];
+    FIRMS.forEach(f=>{
+      if(!f.owned)return;
+      // Fiyat dalgalanması (%+5 ile %-2 arası)
+      let drift=(Math.random()<0.6?1:-1)*(Math.random()*(Math.random()<0.6?0.05:0.02));
+      f.purchaseCost=Math.max(1,Math.floor(f.purchaseCost*(1+drift)));
+      // Günlük gelir
+      let extra=f.investLevel>0?f.investIncomes.slice(0,f.investLevel).reduce((a,b)=>a+b,0):0;
+      let income=f.dailyIncome+extra;
+      firmIncome+=income;
+      firmNames.push({name:langEN?f.nameEN:f.nameTR, income});
+    });
+    if(firmIncome>0){
+      money+=firmIncome; totalRentEarned+=firmIncome;
+      let desc=firmNames.map(fn=>`${fn.name}: +${fmt(fn.income)}${CUR()}`).join(' | ');
+      rentQueue.push({name:L('🏭 Firma Gelirleri','🏭 Company Income'), amount:firmIncome, units:0, extraDesc:desc});
+    }
+    // Her 5 günde bir firma senaryoları tetikle
+    if(day%5===0){
+      FIRMS.forEach(f=>{
+        if(!f.owned||f.investLevel===0)return; // Sadece yatırım yapılmış firmalarda senaryo
+        let extra=f.investLevel>0?f.investIncomes.slice(0,f.investLevel).reduce((a,b)=>a+b,0):0;
+        let baseInc=f.dailyIncome+extra;
+        // İyi/kötü senaryo oranları firmaya göre
+        let goodPool=f.goodScenarios.filter(s=>!f.usedScenarios.includes(s.tr));
+        let badPool=f.badScenarios.filter(s=>!f.usedScenarios.includes(s.tr));
+        if(goodPool.length===0&&badPool.length===0){f.usedScenarios=[];goodPool=[...f.goodScenarios];badPool=[...f.badScenarios];}
+        // Savunma: 9 iyi / 5 kötü, Yazılım: 5/5, Teknoloji: 5/5, Tekstil: 5/3
+        let totalGoodW=f.goodScenarios.length, totalBadW=f.badScenarios.length;
+        let isGood=Math.random()<(totalGoodW/(totalGoodW+totalBadW));
+        let pool=isGood?goodPool:badPool;
+        if(pool.length===0)return;
+        let sc=pool[Math.floor(Math.random()*pool.length)];
+        f.usedScenarios.push(sc.tr);
+        let impact=Math.floor(baseInc*sc.mult);
+        if(isGood){money+=impact;}else{money-=impact;}
+        let header=isGood?L('📈 İyi Gelişme!','📈 Good News!'):L('📉 Olumsuz Gelişme!','📉 Bad News!');
+        let firmName=langEN?f.nameEN:f.nameTR;
+        let msg=`${f.emoji} ${firmName}
+${langEN?(sc.en||sc.tr):sc.tr}
+${isGood?'+':'-'}${fmt(impact)}${CUR()}`;
+        setTimeout(()=>{
+          document.getElementById('eventHeader').innerText=header;
+          document.getElementById('eventDesc').innerText=msg;
+          document.getElementById('eventImpact').innerText='';
+          document.getElementById('eventModal').style.display='flex';
+          SFX.event();
+        },800+(800*FIRMS.indexOf(f)));
+      });
+    }
+  }
+
+  // Kira popup göster (biriktir, tek seferde göster)
+  if(rentQueue.length>0){
+    let totalRent=rentQueue.reduce((s,r)=>s+r.amount,0);
+    let desc=rentQueue.map(r=>r.extraDesc||`${r.name}${r.units>0?' ('+r.units+' '+L('adet','pcs')+')':''}`).join(' | ');
+    document.getElementById('rentDesc').innerText=L(`Günlük gelir: ${desc}`,'Daily income: '+desc);
+    document.getElementById('rentAmount').innerText=`+${fmt(totalRent)}${CUR()}`;
+    document.getElementById('rentModalTitle').innerText=L('🏠 Kira Geliri!','🏠 Daily Income!');
+    document.getElementById('rentModalOkBtn').innerText=L('TAMAM','OK');
+    document.getElementById('rentModal').style.display='flex';
+    SFX.rent(); rentQueue=[];
+  }
+
+  if(day%10===0){
+    isCryptoNight=true;
+    document.body.classList.add('crypto-night');
+    document.getElementById('mainTitle').innerText=L('👾 KRİPTO GECESİ 👾','👾 CRYPTO NIGHT 👾');
+    setUpdateInterval(1000); SFX.crypto();
+  } else if(day%2===0){
+    let eventPool=millionaireMode?allMillionaireEvents:allEvents;
+    let rnd=eventPool[Math.floor(Math.random()*eventPool.length)];
+    document.getElementById('eventHeader').innerText=langEN?(rnd.nameEN||rnd.nameTR):rnd.nameTR;
+    document.getElementById('eventDesc').innerText=langEN?(rnd.textEN||rnd.textTR):rnd.textTR;
+    document.getElementById('eventImpact').innerText=rnd.action();
+    document.getElementById('eventModal').style.display='flex'; SFX.event();
+  }
+
+  if(money<0){end(L('⛔ İFLAS ETTİNİZ!','⛔ BANKRUPT!'),L('Bakiyen tükendi.','Your balance is gone.'));return;}
+  checkMilestones();
+  if(!unlimitedMode&&!millionaireMode&&money>=targetMoney) end(L('🎉 TEBRİKLER!','🎉 CONGRATS!'),L('Hedefe ulaştın!','You reached the goal!'));
+  else if(millionaireMode&&money>=targetMoney) end(L('👑 MİLYARDER OLDUNUZ!','👑 YOU\'RE A BILLIONAIRE!'),L('1 Milyar₺ hedefine ulaştınız!','You reached the $1 Billion goal!'));
+  else if(!unlimitedMode&&!millionaireMode&&day>totalDays) end(L('⛔ SÜRE DOLDU!','⛔ TIME\'S UP!'),L(`${totalDays} gün bitti.`,`${totalDays} days are over.`));
+  // Şans — talih kuşu sonucu
+  if(pendingLottery){
+    let prize=resolveLottery();
+    pendingLottery=false;
+    if(prize>0){money+=prize;totalLuckGain+=prize;SFX.milestone();}
+    setTimeout(()=>{
+      let msg=prize===0
+        ? L('😢 Talih Kuşu: Bu sefer olmadı!','😢 Lucky Bird: No luck this time!')
+        : L(`🎉 Talih Kuşu: ${fmt(prize)}₺ kazandın!`,`🎉 Lucky Bird: You won $${fmt(prize)}!`);
+      document.getElementById('eventHeader').innerText=L('🎲 Şans Sonucu','🎲 Luck Result');
+      document.getElementById('eventDesc').innerText=msg;
+      document.getElementById('eventImpact').innerText='';
+      document.getElementById('eventModal').style.display='flex';
+    },300);
+  }
+  generateNews(); render();
+  saveGame();
+  startAutoDayTimer();
+}
+
+// ═══════════════════════════════════════════════════════
+// LIVE UPDATE
+// ═══════════════════════════════════════════════════════
+function liveUpdate(){
+  let cryptoLimit=isCryptoNight?0.30:0.04;
+  products.forEach(p=>{
+    if(p.delisted)return;
+    p.lastPrice=p.price;
+    p.price*=(1+(Math.random()*cryptoLimit)-(cryptoLimit/2));
+    if(p.price<=1){p.price=1;if(!p.delisted){p.delisted=true;SFX.delist();}}
+  });
+  // Ticaret canlı güncelleme
+  tradeItems.forEach(t=>{
+    t.lastPrice=t.price;
+    let limit=isCryptoNight?0.15:0;
+    let liveRange=isCryptoNight?limit:(Math.random()>0.5?t.liveUp:t.liveDown);
+    let sign=isCryptoNight?(Math.random()>0.5?1:-1):(Math.random()>0.5?1:-1);
+    let drift=isCryptoNight?(Math.random()*limit*sign):(sign===1?Math.random()*t.liveUp:-Math.random()*t.liveDown);
+    t.price*=(1+drift);if(t.price<1)t.price=1;
+  });
+  // Gayrimenkul canlı (çok küçük drift, fiyat değişimi zaten günlük)
+  realEstateItems.forEach(r=>{
+    if(isCryptoNight){r.lastPrice=r.price;r.price*=(1+(Math.random()*0.05)-(0.025));}
+  });
+  if(money>peakCash)peakCash=money;
+  if(money<0)end(L('⛔ İFLAS ETTİNİZ!','⛔ BANKRUPT!'),L('Borçların bakiyeni yuttu.','Your debts consumed your balance.'));
+  render();
+}
+
+// ═══════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════
+function renderPortfolioBar(){
+  const bar=document.getElementById('portfolioBar');
+  const barContainer=bar.parentElement;
+  if(unlimitedMode){
+    // Sınırsız modda barı tamamen gizle
+    barContainer.style.display='none';
+    return;
+  }
+  barContainer.style.display='';
+  // Gün ilerleme barı
+  let pct=Math.min((day/totalDays)*100,100);
+  // Renk: başlarda mavi, ortada sarı, sona doğru kırmızı
+  let barColor=pct<50?'#3498db':pct<80?'#f1c40f':'#e74c3c';
+  bar.innerHTML=`<div class="portfolio-segment" style="width:${pct}%;background:${barColor};border-radius:6px;"></div>`;
+}
+
+function render(){
+  document.getElementById('money').innerText=fmt(money);
+  document.getElementById('debt').innerText=fmt(debt);
+  document.getElementById('day-display').innerText=day;
+  document.getElementById('debtDisplay').style.display=debt>0?'block':'none';
+  renderPortfolioBar();
+  renderStocks();
+  if(currentTab==='trade')renderTrade();
+  if(currentTab==='realestate')renderRealEstate();
+  if(currentTab==='luck')renderLuck();
+}
+
+function renderStocks(){
+  let html='';
+  products.forEach((p,i)=>{
+    let profit=p.stock>0?(p.price-p.avg)*p.stock:0;
+    let pc=profit>0?'#2ecc71':profit<0?'#e74c3c':'#aaa';
+    let tc=p.price>p.lastPrice?'#2ecc71':'#e74c3c';
+    let buyDis=isBorsaHoliday||p.delisted?'disabled':'';
+    let sellDis=isBorsaHoliday||p.delisted||p.stock===0?'disabled':'';
+    let sellCls=p.stock===0||p.delisted?'sell no-stock':'sell';
+    let badge=p.delisted?` <span style="font-size:10px;background:#c0392b;color:#fff;padding:1px 6px;border-radius:4px;">${L('DELİSTED','DELISTED')}</span>`:'';
+    html+=`<div class="card${p.delisted?' delisted':''}" style="border-left-color:${p.delisted?'#555':tc}">
+      <div class="row"><strong>${p.name}${badge} <span style="color:${tc}">${p.price>p.lastPrice?'▲':'▼'}</span></strong>
+      <div class="right-side"><span style="font-weight:bold">${fmt(p.price)}${CUR()}</span>
+        <button class="buy" ${buyDis} onmousedown="startHold(${i},'buy','stock')" onmouseup="endHold(${i},'buy','stock')" ontouchstart="startHold(${i},'buy','stock')" ontouchend="endHold(${i},'buy','stock')">${L('AL','BUY')}</button>
+        <button class="${sellCls}" ${sellDis} onmousedown="startHold(${i},'sell','stock')" onmouseup="endHold(${i},'sell','stock')" ontouchstart="startHold(${i},'sell','stock')" ontouchend="endHold(${i},'sell','stock')">${L('SAT','SELL')}</button>
+        <button class="icon" onclick="openChart(${i},'stock')">📈</button>
+      </div></div>
+      <div class="small" style="color:${pc}">${L('Stok','Stock')}: ${p.stock} | ${L('Ort','Avg')}: ${fmt(p.avg)}${CUR()} | ${L('Kâr','P&L')}: ${fmt(profit)}${CUR()}</div>
+    </div>`;
+  });
+  document.getElementById('panel-stocks').innerHTML=html;
+}
+
+function renderTrade(){
+  let html=`<div style="font-size:11px;color:#aaa;margin-bottom:8px;">${L('💡 Fiyatlar gün içi sürekli dalgalanır. Günler arası değişim daha büyüktür.','💡 Prices fluctuate continuously intraday. Day-to-day changes are larger.')}</div>`;
+  tradeItems.forEach((t,i)=>{
+    let profit=t.stock>0?(t.price-t.avg)*t.stock:0;
+    let pc=profit>0?'#2ecc71':profit<0?'#e74c3c':'#aaa';
+    let tc=t.price>t.lastPrice?'#2ecc71':'#e74c3c';
+    let sellCls=t.stock===0?'sell no-stock':'sell';
+    let sellDis=t.stock===0||isBorsaHoliday?'disabled':'';
+    let buyDis=isBorsaHoliday||money<t.price?'disabled':'';
+    let name=langEN?(t.nameEN||t.nameTR):t.nameTR;
+    html+=`<div class="card" style="border-left-color:${tc}">
+      <div class="row">
+        <strong>${name} <span style="color:${tc}">${t.price>t.lastPrice?'▲':'▼'}</span></strong>
+        <span style="font-weight:bold">${fmt(t.price)}${CUR()}</span>
+      </div>
+      <div class="right-side" style="margin-top:6px;justify-content:flex-end;">
+        <button class="buy" ${buyDis} onmousedown="startHold(${i},'buy','trade')" onmouseup="endHold(${i},'buy','trade')" ontouchstart="startHold(${i},'buy','trade')" ontouchend="endHold(${i},'buy','trade')">${L('AL','BUY')}</button>
+        <button class="${sellCls}" ${sellDis} onmousedown="startHold(${i},'sell','trade')" onmouseup="endHold(${i},'sell','trade')" ontouchstart="startHold(${i},'sell','trade')" ontouchend="endHold(${i},'sell','trade')">${L('SAT','SELL')}</button>
+        <button class="icon" onclick="openChart(${i},'trade')">📈</button>
+      </div>
+      <div class="small" style="color:${pc}">${L('Stok','Stock')}: ${t.stock} | ${L('Ort','Avg')}: ${fmt(t.avg)}${CUR()} | ${L('Kâr','P&L')}: ${fmt(profit)}${CUR()}</div>
+    </div>`;
+  });
+  // Milyoner modunda firma bölümü
+  if(millionaireMode){
+    html+=`<div style="border-top:1px solid #333;margin:14px 0 10px 0;"></div>
+    <div style="font-size:12px;color:#f1c40f;font-weight:bold;margin-bottom:8px;">🏭 ${L('ŞİRKETLER — Uzun Vadeli Yatırım','COMPANIES — Long-Term Investment')}</div>
+    <div style="font-size:11px;color:#777;margin-bottom:10px;">${L('Her yeni gün sabit gelir sağlar. Yatırım yap, gelirini artır.','Provides fixed income every new day. Invest to increase revenue.')}</div>`;
+    FIRMS.forEach((f,fi)=>{
+      let dailyTotal=f.dailyIncome+(f.investLevel>0?f.investIncomes.slice(0,f.investLevel).reduce((a,b)=>a+b,0):0);
+      if(f.owned){
+        // Sahipli firma kartı
+        let invBtns='';
+        for(let lv=0;lv<3;lv++){
+          let cost=f.investCosts[lv];
+          let extraInc=f.investIncomes[lv];
+          let done=f.investLevel>lv;
+          let canAfford=money>=cost;
+          if(done){
+            invBtns+=`<span style="font-size:10px;background:#27ae6040;color:#2ecc71;padding:2px 7px;border-radius:4px;margin-right:3px;">${L('Sev.','Lv.')}${lv+1} ✅</span>`;
+          } else if(f.investLevel===lv){
+            invBtns+=`<button onclick="investFirm(${fi})" style="font-size:10px;background:#3498db30;color:#3498db;border:1px solid #3498db50;padding:3px 7px;border-radius:4px;cursor:pointer;margin-right:3px;" ${canAfford?'':'disabled'}>${L('Yatırım','Invest')} ${L('Sev.','Lv.')}${lv+1} (${fmt(cost)}${CUR()}) +${fmt(extraInc)}${CUR()}/${L('gün','day')}</button>`;
+          } else {
+            invBtns+=`<span style="font-size:10px;color:#444;padding:2px 7px;">🔒 ${L('Sev.','Lv.')}${lv+1}</span>`;
+          }
+        }
+        html+=`<div class="card" style="border-left:3px solid ${f.color};background:#1a1a1a;">
+          <div class="row"><strong>${f.emoji} ${langEN?f.nameEN:f.nameTR}</strong><span style="color:#2ecc71;font-size:12px">+${fmt(dailyTotal)}${CUR()}/${L('gün','day')}</span></div>
+          <div style="font-size:10px;color:#888;margin:4px 0">${L('Mevcut fiyat:','Current value:')} ${fmt(f.purchaseCost)}${CUR()} &nbsp;|&nbsp; ${L('Yatırım Seviyesi:','Investment Level:')} ${f.investLevel}/3</div>
+          <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">${invBtns}</div>
+          <div style="margin-top:6px;text-align:right"><button onclick="sellFirm(${fi})" style="font-size:11px;background:#c0392b30;color:#e74c3c;border:1px solid #c0392b50;padding:4px 10px;border-radius:4px;cursor:pointer;">${L('Firmayı Sat','Sell Company')} (${fmt(f.purchaseCost)}${CUR()})</button></div>
+        </div>`;
+      } else {
+        // Satın alınabilir firma kartı
+        let canBuy=money>=f.purchaseCost;
+        html+=`<div class="card" style="border-left:3px solid #444;opacity:0.85;">
+          <div class="row"><strong>${f.emoji} ${langEN?f.nameEN:f.nameTR}</strong><span style="color:#aaa;font-size:12px">+${fmt(f.dailyIncome)}${CUR()}/${L('gün','day')}</span></div>
+          <div style="font-size:10px;color:#666;margin:4px 0">${L('Kurulum:','Setup:')} ${fmt(f.purchaseCost)}${CUR()} &nbsp;|&nbsp; ${L('Yatırım yapılırsa senaryo gelir','Scenarios trigger if invested')}</div>
+          <div style="margin-top:6px;text-align:right"><button onclick="buyFirm(${fi})" style="font-size:12px;background:#27ae6030;color:#2ecc71;border:1px solid #27ae6050;padding:5px 12px;border-radius:4px;cursor:pointer;" ${canBuy?'':'disabled'}>${L('Firma Kur','Establish Company')} (${fmt(f.purchaseCost)}${CUR()})</button></div>
+        </div>`;
+      }
+    });
+  }
+  document.getElementById('panel-trade').innerHTML=html;
+}
+
+function renderRealEstate(){
+  let html=`<div style="font-size:11px;color:#aaa;margin-bottom:8px;">${L('🏠 Fiyatlar 5 günde bir güncellenir. Mülk sahibi olduğunda her gün kira geliri elde edersin.','🏠 Prices update every 5 days. Owning a property earns you daily rental income.')}</div>`;
+  realEstateItems.forEach((r,i)=>{
+    let profit=r.stock>0?(r.price-r.avg)*r.stock:0;
+    let pc=profit>0?'#2ecc71':profit<0?'#e74c3c':'#aaa';
+    let timerLeft=5-r.priceTimer;
+    let name=langEN?(r.nameEN||r.nameTR):r.nameTR;
+    let sellCls=r.stock===0?'sell no-stock':'sell';
+    let sellDis=r.stock===0||isBorsaHoliday?'disabled':'';
+    let buyDis=isBorsaHoliday||money<r.price||r.stock>=1?'disabled':'';
+    html+=`<div class="re-card">
+      <div class="row"><strong>${name} <span class="re-rent-badge">${L('Günlük Kira:','Daily Rent:')} ${fmt(r.rentPerDay)}${CUR()}</span></strong>
+      <div class="right-side"><span style="font-weight:bold">${fmt(r.price)}${CUR()}</span>
+        <button class="buy" ${buyDis} onmousedown="startHold(${i},'buy','re')" onmouseup="endHold(${i},'buy','re')" ontouchstart="startHold(${i},'buy','re')" ontouchend="endHold(${i},'buy','re')">${L('AL','BUY')}</button>
+        <button class="${sellCls}" ${sellDis} onmousedown="startHold(${i},'sell','re')" onmouseup="endHold(${i},'sell','re')" ontouchstart="startHold(${i},'sell','re')" ontouchend="endHold(${i},'sell','re')">${L('SAT','SELL')}</button>
+        <button class="icon" onclick="openChart(${i},'re')">📈</button>
+      </div></div>
+      <div class="small" style="color:${pc}">${L('Stok','Units')}: ${r.stock} | ${L('Ort','Avg')}: ${fmt(r.avg)}${CUR()} | ${L('Kâr','P&L')}: ${fmt(profit)}${CUR()} | ${L('Bir sonraki fiyatlama:','Next pricing:')} ${timerLeft} ${L('gün','days')}</div>
+    </div>`;
+  });
+  document.getElementById('panel-realestate').innerHTML=html;
+}
+
+// ═══════════════════════════════════════════════════════
+// AL / SAT
+// ═══════════════════════════════════════════════════════
+let touchMoved=false;
+function startHold(idx,action,type){
+  if(isBorsaHoliday)return;
+  if(type==='stock'&&products[idx].delisted)return;
+  if(action==='sell'){
+    let arr=type==='stock'?products:type==='trade'?tradeItems:realEstateItems;
+    if(arr[idx].stock===0)return;
+  }
+  touchMoved=false;
+  holdTimer=setTimeout(()=>{holdTimer=null;if(!touchMoved)openMassModal(idx,action,type);},2000);
+}
+function endHold(idx,action,type){
+  if(isBorsaHoliday)return;
+  if(type==='stock'&&products[idx].delisted)return;
+  if(action==='sell'){
+    let arr=type==='stock'?products:type==='trade'?tradeItems:realEstateItems;
+    if(arr[idx].stock===0)return;
+  }
+  if(holdTimer){
+    clearTimeout(holdTimer);holdTimer=null;
+    if(!touchMoved){if(action==='buy')buyItem(idx,type,1);else sellItem(idx,type,1);}
+  }
+  touchMoved=false;
+}
+
+function buyItem(idx,type,qty){
+  let arr=type==='stock'?products:type==='trade'?tradeItems:realEstateItems;
+  let p=arr[idx];
+  if(type==='re'&&p.stock+qty>1){alert(L('Bir mülkten yalnızca 1 adet alınabilir!','You can only own 1 unit of each property!'));return;}
+  let cost=p.price*qty;
+  if(money<cost||isBorsaHoliday)return;
+  money-=cost;
+  p.avg=((p.avg*p.stock)+cost)/(p.stock+qty);
+  p.stock+=qty;
+  totalTrades++;
+  SFX.buy();
+  if(cost>=50000){let m=milestones.find(ms=>ms.id==='m3');if(m&&!m.unlocked)unlockMilestone(m);}
+  checkMilestones();
+  render();
+  saveGame();
+}
+
+function sellItem(idx,type,qty){
+  let arr=type==='stock'?products:type==='trade'?tradeItems:realEstateItems;
+  let p=arr[idx];
+  if(p.stock<qty||isBorsaHoliday)return;
+  let revenue=p.price*qty;
+  let profit=(p.price-p.avg)*qty;
+  p.totalProfit+=profit;
+  if(type==='stock'){
+    if(p.hasNews&&p.price>p.avg){let m=milestones.find(ms=>ms.id==='m5');if(m&&!m.unlocked)unlockMilestone(m);}
+  }
+  if(type==='trade') totalTradeProfit+=profit;
+  if(type==='re'){
+    totalRealEstateProfit+=profit;
+    let m=milestones.find(ms=>ms.id==='r4');
+    if(m&&!m.unlocked&&p.avg>0&&p.price>=p.avg*2)unlockMilestone(m);
+  }
+  money+=revenue;
+  p.stock-=qty;
+  totalTrades++;
+  SFX.sell();
+  if(p.stock===0){p.avg=0;if(type==='stock')p.hasNews=false;}
+  checkMilestones();
+  render();
+  saveGame();
+}
+
+// ═══════════════════════════════════════════════════════
+// TOPLU İŞLEM
+// ═══════════════════════════════════════════════════════
+let massCurrentIdx,massCurrentType,massCurrentAction;
+function openMassModal(idx,action,type){
+  massCurrentIdx=idx;massCurrentType=type;massCurrentAction=action;
+  let arr=type==='stock'?products:type==='trade'?tradeItems:realEstateItems;
+  let name=type==='stock'?arr[idx].name:(langEN?(arr[idx].nameEN||arr[idx].nameTR):arr[idx].nameTR);
+  document.getElementById('massModal').style.display='flex';
+  document.getElementById('massTitle').innerText=(action==='buy'?L('Toplu Al: ','Bulk Buy: '):L('Toplu Sat: ','Bulk Sell: '))+name;
+  document.getElementById('massConfirmBtn').onclick=()=>{
+    let qty=parseInt(document.getElementById('massQty').value);
+    if(!qty||qty<=0){alert(L('Geçerli bir adet gir!','Enter a valid quantity!'));return;}
+    let arr2=massCurrentType==='stock'?products:massCurrentType==='trade'?tradeItems:realEstateItems;
+    if(action==='sell'&&arr2[massCurrentIdx].stock<qty){alert(L(`Yeterli stok yok! Eldeki: ${arr2[massCurrentIdx].stock}`,`Not enough stock! You have: ${arr2[massCurrentIdx].stock}`));return;}
+    if(action==='buy')buyItem(massCurrentIdx,massCurrentType,qty);
+    else sellItem(massCurrentIdx,massCurrentType,qty);
+    closeModals();
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+// BANKA
+// ═══════════════════════════════════════════════════════
+function bankAction(type){
+  let amt=parseInt(document.getElementById('bankAmount').value);
+  if(!amt||amt<=0)return;
+  if(type==='loan'){
+    if(debt+amt>bankLimit){alert(L(`Limit ${fmt(bankLimit)}₺!`,`Limit $${fmt(bankLimit)}!`));return;}
+    let oldRate=getInterestRate();
+    let newDebt=debt+amt;
+    let nr=millionaireMode?(newDebt<=100000000?0.02:newDebt<=300000000?0.03:newDebt<=400000000?0.04:0.05):(newDebt<=50000?0.02:newDebt<=100000?0.04:newDebt<=200000?0.06:newDebt<=300000?0.07:0.085);
+    if(nr>oldRate){
+      let msg=L(`⚠️ Bu krediyle toplam borcun ${fmt(newDebt)}₺ olacak.\nFaiz oranın %${(oldRate*100).toFixed(1)}'den %${(nr*100).toFixed(1)}'e yükseliyor!\n\nDevam etmek istiyor musun?`,`⚠️ Your total debt will be $${fmt(newDebt)} with this loan.\nInterest rate will rise from ${(oldRate*100).toFixed(1)}% to ${(nr*100).toFixed(1)}%!\n\nDo you want to continue?`);
+      if(!confirm(msg))return;
+    }
+    debt+=amt;money+=amt;
+  } else {
+    if(debt<=0){alert(L('Borcun yok!','You have no debt!'));return;}
+    let payAmt=Math.min(amt,debt);
+    if(money<payAmt){alert(L('Yeterli paran yok!','Not enough money!'));return;}
+    money-=payAmt; debt-=payAmt;
+  }
+  render();closeModals();
+}
+
+// ═══════════════════════════════════════════════════════
+// HABER
+// ═══════════════════════════════════════════════════════
+function generateNews(){
+  products.forEach(p=>p.hasNews=false);
+  let active=products.filter(p=>!p.delisted);
+  if(active.length===0)return;
+  let rp=active[Math.floor(Math.random()*active.length)];
+  let ri=products.indexOf(rp);
+  let pos=Math.random()>0.5;
+  let tpl=pos?(langEN?newsLibrary.positiveEN:newsLibrary.positive):(langEN?newsLibrary.negativeEN:newsLibrary.negative);
+  pendingEvent={productIdx:ri,type:pos?'UP':'DOWN',strength:pos?(0.5+Math.random()):(0.3+Math.random()*0.5)};
+  rp.hasNews=true;
+  document.getElementById('news-text').innerText=`📰 ${rp.name} ${tpl[Math.floor(Math.random()*tpl.length)]}`;
+  document.getElementById('news-text').style.color=pos?'#2ecc71':'#e74c3c';
+}
+
+// ═══════════════════════════════════════════════════════
+// GRAFİK
+// ═══════════════════════════════════════════════════════
+function openChart(i,type){
+  let arr=type==='stock'?products:type==='trade'?tradeItems:realEstateItems;
+  let p=arr[i];
+  let name=type==='stock'?p.name:(langEN?(p.nameEN||p.nameTR):p.nameTR);
+  document.getElementById('chartPopup').style.display='flex';
+  document.getElementById('chartTitle').innerText=name;
+  document.getElementById('chartCompanyInfo').innerText=(langEN?(p.infoEN||p.infoTR||''):(p.infoTR||''));
+  let c=document.getElementById('chart'),ctx=c.getContext('2d');
+  ctx.clearRect(0,0,280,180);
+  let max=Math.max(...p.history),min=Math.min(...p.history),range=(max-min)||1;
+  ctx.beginPath();
+  p.history.forEach((v,idx)=>{let x=idx*(280/((p.history.length-1)||1)),y=170-((v-min)/range)*150+5;idx===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+  ctx.lineTo(280,180);ctx.lineTo(0,180);ctx.closePath();
+  ctx.fillStyle='rgba(52,152,219,0.12)';ctx.fill();
+  ctx.beginPath();ctx.lineWidth=2;ctx.strokeStyle=p.color||'#2ecc71';
+  p.history.forEach((v,idx)=>{let x=idx*(280/((p.history.length-1)||1)),y=170-((v-min)/range)*150+5;idx===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+  ctx.stroke();
+}
+function closeChart(){document.getElementById('chartPopup').style.display='none';}
+
+// ═══════════════════════════════════════════════════════
+// PORTFÖY
+// ═══════════════════════════════════════════════════════
+function openPortfolio(){
+  let totalStockVal=0,totalTradeVal=0,totalREVal=0;
+  products.forEach(p=>{totalStockVal+=p.stock*p.price;});
+  tradeItems.forEach(t=>{totalTradeVal+=t.stock*t.price;});
+  realEstateItems.forEach(r=>{totalREVal+=r.stock*r.price;});
+  let cashVal=Math.max(Math.floor(money),0);
+  let netAssets=cashVal+totalStockVal+totalTradeVal+totalREVal+(millionaireMode?FIRMS.filter(f=>f.owned).reduce((s,f)=>s+f.purchaseCost,0):0);
+  let netWorth=netAssets-debt;
+  let progressRaw=Math.min(Math.max((netWorth/targetMoney)*100,0),100);
+  let barColor=progressRaw>=50?'#2ecc71':progressRaw>=20?'#f1c40f':'#e74c3c';
+  let debtRow=debt>0?`<div class="fin-row"><span class="fin-label">${L('🔴 Toplam Borç','🔴 Total Debt')}</span><span class="fin-value neg">-${fmt(debt)}${CUR()}</span></div>`:`<div class="fin-row"><span class="fin-label">${L('🟢 Borç Durumu','🟢 Debt Status')}</span><span class="fin-value pos">${L('Borçsuz','Debt-Free')}</span></div>`;
+
+  // Normal modda trade/RE satırlarını gösterme
+  let firmsTotalVal=millionaireMode?FIRMS.filter(f=>f.owned).reduce((s,f)=>s+f.purchaseCost,0):0;
+  let tradeRow = millionaireMode ? `
+    <div class="fin-row"><span class="fin-label">${L('🛍️ Ticaret Değeri','🛍️ Trade Value')}</span><span class="fin-value">${fmt(totalTradeVal)}${CUR()}</span></div>
+    <div class="fin-row"><span class="fin-label">${L('🏠 Gayrimenkul Değeri','🏠 Real Estate Value')}</span><span class="fin-value">${fmt(totalREVal)}${CUR()}</span></div>
+    ${firmsTotalVal>0?`<div class="fin-row"><span class="fin-label">${L('🏭 Firma Değeri','🏭 Company Value')}</span><span class="fin-value">${fmt(firmsTotalVal)}${CUR()}</span></div>`:''}
+    <div class="fin-row"><span class="fin-label">${L('🏠 Toplam Kira+Firma Geliri','🏠 Total Rent+Firm Income')}</span><span class="fin-value pos">${fmt(totalRentEarned)}${CUR()}</span></div>
+    <div class="fin-row"><span class="fin-label">${L('🎲 Şans Kazancı','🎲 Luck Won')}</span><span class="fin-value pos">+${fmt(totalLuckGain)}${CUR()}</span></div><div class="fin-row"><span class="fin-label">${L('🎲 Şansa Harcanan','🎲 Luck Spent')}</span><span class="fin-value neg">-${fmt(totalLuckLost)}${CUR()}</span></div>
+    <div style='display:none'>x${CUR()}</span></div>` : '';
+
+  let html=`<div class="fin-summary-box">
+    <div class="fin-summary-title">${L('📊 FİNANSAL ÖZET','📊 FINANCIAL SUMMARY')}</div>
+    <div class="fin-row"><span class="fin-label">${L('💰 Nakit','💰 Cash')}</span><span class="fin-value" style="color:#3498db">${fmt(cashVal)}${CUR()}</span></div>
+    <div class="fin-row"><span class="fin-label">${L('📈 Hisse Değeri','📈 Stock Value')}</span><span class="fin-value">${fmt(totalStockVal)}${CUR()}</span></div>
+    ${tradeRow}
+    ${debtRow}
+    <div class="fin-row"><span class="fin-label">${L('⏳ Kalan Gün','⏳ Days Left')}</span><span class="fin-value">${unlimitedMode?'∞':Math.max(totalDays-day+1,0)} ${L('gün','days')}</span></div>
+    <div class="fin-total-row"><span>${L('💼 Net Değer','💼 Net Worth')}</span><span style="color:${netWorth>=0?'#2ecc71':'#e74c3c'}">${fmt(netWorth)}${CUR()}</span></div>
+    <div class="fin-progress-wrap">
+      <div class="fin-progress-label"><span>${L('Hedefe İlerleme','Progress to Goal')}</span><span>${progressRaw.toFixed(1)}%</span></div>
+      <div class="fin-progress-bar"><div class="fin-progress-fill" style="width:${progressRaw.toFixed(1)}%;background:${barColor};"></div></div>
+      <div style="font-size:10px;color:#555;margin-top:4px;text-align:right;">${L('Hedef','Goal')}: ${fmt(targetMoney)}${CUR()}</div>
+    </div>
+  </div>`;
+
+  // Hisseler
+  let ownedStocks=products.filter(p=>p.stock>0);
+  if(ownedStocks.length>0){
+    html+=`<div class="section-label">📈 ${L('HİSSELER','STOCKS')}</div>`;
+    ownedStocks.forEach(p=>{
+      let profit=(p.price-p.avg)*p.stock;
+      let cls=profit>=0?'pos':'neg';
+      html+=`<div class="p-list-item" style="border-left-color:${p.color}"><div class="p-header"><span>${p.name}</span><span class="${cls}">${fmt(profit)}${CUR()} (${((p.price/p.avg-1)*100).toFixed(1)}%)</span></div><div class="p-details"><span>${L('Adet','Qty')}: ${p.stock}</span><span>${L('Ort','Avg')}: ${fmt(p.avg)}${CUR()}</span><span>${L('Fiyat','Price')}: ${fmt(p.price)}${CUR()}</span><span>${L('Varlık','Value')}: ${fmt(p.stock*p.price)}${CUR()}</span></div></div>`;
+    });
+  }
+
+  // Ticaret
+  let ownedTrade=tradeItems.filter(t=>t.stock>0);
+  if(ownedTrade.length>0){
+    html+=`<div class="section-label">🛍️ ${L('TİCARET','TRADE')}</div>`;
+    ownedTrade.forEach(t=>{
+      let profit=(t.price-t.avg)*t.stock;
+      let cls=profit>=0?'pos':'neg';
+      let name=langEN?(t.nameEN||t.nameTR):t.nameTR;
+      html+=`<div class="p-list-item" style="border-left-color:${t.color}"><div class="p-header"><span>${name}</span><span class="${cls}">${fmt(profit)}${CUR()} (${((t.price/t.avg-1)*100).toFixed(1)}%)</span></div><div class="p-details"><span>${L('Adet','Qty')}: ${t.stock}</span><span>${L('Ort','Avg')}: ${fmt(t.avg)}${CUR()}</span><span>${L('Fiyat','Price')}: ${fmt(t.price)}${CUR()}</span><span>${L('Varlık','Value')}: ${fmt(t.stock*t.price)}${CUR()}</span></div></div>`;
+    });
+  }
+
+  // Gayrimenkul
+  let ownedRE=realEstateItems.filter(r=>r.stock>0);
+  if(ownedRE.length>0){
+    html+=`<div class="section-label">🏠 ${L('GAYRİMENKUL','REAL ESTATE')}</div>`;
+    ownedRE.forEach(r=>{
+      let profit=(r.price-r.avg)*r.stock;
+      let cls=profit>=0?'pos':'neg';
+      let name=langEN?(r.nameEN||r.nameTR):r.nameTR;
+      html+=`<div class="p-list-item" style="border-left-color:#e67e22"><div class="p-header"><span>${name}</span><span class="${cls}">${fmt(profit)}${CUR()} (${((r.price/r.avg-1)*100).toFixed(1)}%)</span></div><div class="p-details"><span>${L('Adet','Units')}: ${r.stock}</span><span>${L('Ort','Avg')}: ${fmt(r.avg)}${CUR()}</span><span>${L('Fiyat','Price')}: ${fmt(r.price)}${CUR()}</span><span>${L('Kira/gün','Rent/day')}: ${fmt(r.rentPerDay*r.stock)}${CUR()}</span></div></div>`;
+    });
+  }
+
+  // Firmalar (Milyoner Modu)
+  let ownedFirmsP=millionaireMode?FIRMS.filter(f=>f.owned):[];
+  if(ownedFirmsP.length>0){
+    html+=`<div class="section-label">🏭 ${L('FİRMALAR','COMPANIES')}</div>`;
+    ownedFirmsP.forEach(f=>{
+      let extra=f.investLevel>0?f.investIncomes.slice(0,f.investLevel).reduce((a,b)=>a+b,0):0;
+      let dailyTotal=f.dailyIncome+extra;
+      let name=langEN?f.nameEN:f.nameTR;
+      html+=`<div class="p-list-item" style="border-left-color:${f.color}"><div class="p-header"><span>${f.emoji} ${name}</span><span class="pos">+${fmt(dailyTotal)}${CUR()}/${L('gün','day')}</span></div><div class="p-details"><span>${L('Yatırım Seviyesi','Investment Level')}: ${f.investLevel}/3</span><span>${L('Piyasa Değeri','Market Value')}: ${fmt(f.purchaseCost)}${CUR()}</span></div></div>`;
+    });
+  }
+
+  if(ownedStocks.length===0&&ownedTrade.length===0&&ownedRE.length===0&&ownedFirmsP.length===0)
+    html+=`<div style="text-align:center;padding:16px;color:#555;">${L('Henüz hiçbir varlığınız yok.','You don\'t own any assets yet.')}</div>`;
+
+  document.getElementById('portfolioList').innerHTML=html;
+  document.getElementById('portfolioPopup').style.display='flex';
+}
+
+// ═══════════════════════════════════════════════════════
+// MİLESTONE
+// ═══════════════════════════════════════════════════════
+function checkMilestones(){milestones.forEach(m=>{if(!m.unlocked&&m.check())unlockMilestone(m);});}
+function unlockMilestone(m){
+  m.unlocked=true;
+  let actualBonus=millionaireMode?m.bonus*50:m.bonus;
+  money+=actualBonus;SFX.milestone();
+  document.getElementById('unlockedHeader').innerText=L('TEBRİKLER!','CONGRATS!');
+  document.getElementById('unlockedTitle').innerText=langEN?(m.titleEN||m.title):m.title;
+  document.getElementById('unlockedBonus').innerText=`+${fmt(actualBonus)}${CUR()} Bonus!`;
+  document.getElementById('unlockedModal').style.display='flex';render();
+}
+function openMS(){
+  let h='';milestones.forEach(m=>{let displayBonus=millionaireMode?m.bonus*50:m.bonus;h+=`<div class="ms-card ${m.unlocked?'ms-unlocked':''}"><b>${langEN?(m.titleEN||m.title):m.title} ${m.unlocked?'✅':''}</b><small>${langEN?(m.descEN||m.desc):m.desc}</small><div class="ms-reward">${L('ÖDÜL:','REWARD:')} ${fmt(displayBonus)}${CUR()} ${L('KAZAN!','WIN!')}</div></div>`;});
+  document.getElementById('msList').innerHTML=h;document.getElementById('msModal').style.display='flex';
+}
+function openMS_silent(){
+  const el=document.getElementById('msList');if(!el)return;
+  let h='';milestones.forEach(m=>{let displayBonus=millionaireMode?m.bonus*50:m.bonus;h+=`<div class="ms-card ${m.unlocked?'ms-unlocked':''}"><b>${langEN?(m.titleEN||m.title):m.title} ${m.unlocked?'✅':''}</b><small>${langEN?(m.descEN||m.desc):m.desc}</small><div class="ms-reward">${L('ÖDÜL:','REWARD:')} ${fmt(displayBonus)}${CUR()} ${L('KAZAN!','WIN!')}</div></div>`;});
+  el.innerHTML=h;
+}
+
+// ═══════════════════════════════════════════════════════
+// OYUN SONU
+// ═══════════════════════════════════════════════════════
+function end(t,sub){
+  clearInterval(liveInterval);
+  stopAutoDayTimer();
+  if(t.includes('TEBRİKLER')||t.includes('CONGRATS')||t.includes('MİLYARDER')||t.includes('BILLIONAIRE'))SFX.win();else SFX.gameover();
+  // Skoru Firebase'e gönder
+  const mode=millionaireMode?'💰 Milyoner':unlimitedMode?'♾️ Sınırsız':'Normal';
+  if(typeof window.fbSubmitScore==='function'){
+    const snapMoney=Math.floor(money);
+    const snapDay=day;
+    const snapName=playerName;
+    setTimeout(()=>window.fbSubmitScore({name:snapName,money:snapMoney,day:snapDay,mode}),200);
+  }
+  document.getElementById('overlay').style.display='flex';
+  document.getElementById('resultText').innerText=t;
+  document.getElementById('resultSub').innerText=sub;
+  let tHtml=`<tr><th>${L('Varlık','Asset')}</th><th>${L('Toplam Kâr','Total P&L')}</th></tr>`;
+  // Hisseler
+  tHtml+=`<tr><td colspan="2" style="color:#3498db;padding-top:6px">📈 ${L('Hisseler','Stocks')}</td></tr>`;
+  [...products].sort((a,b)=>b.totalProfit-a.totalProfit).forEach(p=>{let cls=p.totalProfit>0?'pos':p.totalProfit<0?'neg':'';tHtml+=`<tr><td>${p.name}</td><td class="${cls}">${fmt(p.totalProfit)}${CUR()}</td></tr>`;});
+  // Ticaret
+  tHtml+=`<tr><td colspan="2" style="color:#e67e22;padding-top:6px">🛍️ ${L('Ticaret','Trade')}</td></tr>`;
+  [...tradeItems].filter(t=>t.totalProfit!==0).sort((a,b)=>b.totalProfit-a.totalProfit).forEach(t=>{let name=langEN?(t.nameEN||t.nameTR):t.nameTR;let cls=t.totalProfit>0?'pos':t.totalProfit<0?'neg':'';tHtml+=`<tr><td>${name}</td><td class="${cls}">${fmt(t.totalProfit)}${CUR()}</td></tr>`;});
+  // Gayrimenkul
+  tHtml+=`<tr><td colspan="2" style="color:#2ecc71;padding-top:6px">🏠 ${L('Gayrimenkul','Real Estate')}</td></tr>`;
+  [...realEstateItems].filter(r=>r.totalProfit!==0).sort((a,b)=>b.totalProfit-a.totalProfit).forEach(r=>{let name=langEN?(r.nameEN||r.nameTR):r.nameTR;let cls=r.totalProfit>0?'pos':r.totalProfit<0?'neg':'';tHtml+=`<tr><td>${name}</td><td class="${cls}">${fmt(r.totalProfit)}${CUR()}</td></tr>`;});
+  document.getElementById('reportTable').innerHTML=tHtml;
+  document.getElementById('financeSummary').innerHTML=`
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Ödenen Faiz:','Interest Paid:')}</span><span class="neg">-${fmt(totalInterestPaid)}${CUR()}</span></div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Toplam Kira Geliri:','Total Rent Earned:')}</span><span class="pos">+${fmt(totalRentEarned)}${CUR()}</span></div>
+    ${millionaireMode?`<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Şans Kazancı:','Luck Won:')}</span><span class="pos">+${fmt(totalLuckGain)}${CUR()}</span></div><div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Şansa Harcanan:','Luck Spent:')}</span><span class="neg">-${fmt(totalLuckLost)}${CUR()}</span></div>`:''}
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('En Yüksek Nakit:','Peak Cash:')}</span><span class="pos">${fmt(peakCash)}${CUR()}</span></div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Toplam İşlem Sayısı:','Total Trades:')}</span><span>${totalTrades} ${L('işlem','trades')}</span></div>
+    ${debt>0?`<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:#e74c3c">${L('Toplam Borç:','Total Debt:')}</span><span class="neg">-${fmt(debt)}${CUR()}</span></div>`:''}
+    <div style="display:flex;justify-content:space-between;margin-top:6px;font-weight:bold;border-top:1px solid #333;padding-top:6px"><span>${L('Final Nakit:','Final Cash:')}</span><span style="color:#3498db">${fmt(money)}${CUR()}</span></div>
+    ${debt>0?`<div style="display:flex;justify-content:space-between;margin-top:4px;font-weight:bold"><span>${L('🏆 Net Skor:','🏆 Net Score:')}</span><span style="color:${money-debt>=0?'#2ecc71':'#e74c3c'}">${fmt(money-debt)}${CUR()}</span></div>`:''}`;
+}
+
+// ═══════════════════════════════════════════════════════
+// AYARLAR
+// ═══════════════════════════════════════════════════════
+function openSettings(){document.getElementById('settingsModal').style.display='flex';}
+function openInfo(){document.getElementById('infoModal').style.display='flex';}
+// ═══════════════════════════════════════════════════════
+// FİRMA İŞLEMLERİ
+// ═══════════════════════════════════════════════════════
+function buyFirm(fi){
+  const f=FIRMS[fi];
+  if(f.owned){alert(L('Bu firmayı zaten kurdunuz!','You already own this company!'));return;}
+  if(money<f.purchaseCost){alert(L('Yeterli nakitin yok!','Not enough cash!'));return;}
+  money-=f.purchaseCost; f.owned=true; f.usedScenarios=[];
+  SFX.buy();
+  let extra=f.investLevel>0?f.investIncomes.slice(0,f.investLevel).reduce((a,b)=>a+b,0):0;
+  document.getElementById('eventHeader').innerText=L('🏭 Firma Kuruldu!','🏭 Company Established!');
+  document.getElementById('eventDesc').innerText=`${f.emoji} ${langEN?f.nameEN:f.nameTR}
+${L('Her gün','Every day')} +${fmt(f.dailyIncome+extra)}${CUR()} ${L('gelir sağlayacak.','income will be generated.')}`;
+  document.getElementById('eventImpact').innerText=`-${fmt(f.purchaseCost)}${CUR()}`;
+  document.getElementById('eventModal').style.display='flex';
+  totalTrades++; checkMilestones(); render(); if(currentTab==='trade')renderTrade(); saveGame();
+}
+
+function sellFirm(fi){
+  const f=FIRMS[fi];
+  if(!f.owned)return;
+  let val=f.purchaseCost;
+  let sName=langEN?f.nameEN:f.nameTR;
+  if(!confirm(L(`${f.emoji} ${sName} ${L('firmasını','company')} ${fmt(val)}${CUR()}${L("'ye sat?",' - sell?')}`,`Sell ${f.emoji} ${sName} for ${fmt(val)}${CUR()}?`)))return;
+  money+=val; f.owned=false; f.investLevel=0; f.usedScenarios=[];
+  SFX.sell();
+  render(); if(currentTab==='trade')renderTrade(); saveGame();
+}
+
+function investFirm(fi){
+  const f=FIRMS[fi];
+  if(!f.owned)return;
+  let lv=f.investLevel;
+  if(lv>=3){alert(L('Maksimum yatırım seviyesine ulaşıldı!','Maximum investment level reached!'));return;}
+  let cost=f.investCosts[lv];
+  if(money<cost){alert(L('Yeterli nakitin yok!','Not enough cash!'));return;}
+  money-=cost; f.investLevel++;
+  SFX.buy();
+  let newInc=f.investIncomes[lv];
+  let total=f.dailyIncome+f.investIncomes.slice(0,f.investLevel).reduce((a,b)=>a+b,0);
+  document.getElementById('eventHeader').innerText=L('💹 Yatırım Yapıldı!','💹 Investment Made!');
+  document.getElementById('eventDesc').innerText=`${f.emoji} ${langEN?f.nameEN:f.nameTR} — ${L('Seviye','Level')} ${f.investLevel}
++${fmt(newInc)}${CUR()}/${L('gün ek gelir','day extra income')}`;
+  document.getElementById('eventImpact').innerText=`${L('Yeni toplam gelir:','New total income:')} +${fmt(total)}${CUR()}/${L('gün','day')}`;
+  document.getElementById('eventModal').style.display='flex';
+  totalTrades++; checkMilestones(); render(); if(currentTab==='trade')renderTrade(); saveGame();
+}
+
+function openBank(){
+  if(liveInterval)clearInterval(liveInterval);
+  if(document.getElementById('bankSubtitle')){
+    let rate=(getInterestRate()*100).toFixed(1);
+    document.getElementById('bankSubtitle').innerHTML=L(
+      `Mevcut Borç: ${fmt(debt)}₺ | Kredi Limiti: ${fmt(bankLimit)}₺ | Kullanılabilir: ${fmt(Math.max(0,bankLimit-debt))}₺<br><span style="font-size:10px;color:#666;">Günlük Faiz: %${rate} | ${millionaireMode?'≤100M:%2 | ≤300M:%3 | ≤400M:%4 | üstü:%5':'≤50k:%2 | ≤100k:%4 | ≤200k:%6 | ≤300k:%7 | ≤500k:%8.5'}</span>`,
+      `Current Debt: $${fmt(debt)} | Credit Limit: $${fmt(bankLimit)} | Available: $${fmt(Math.max(0,bankLimit-debt))}<br><span style="font-size:10px;color:#666;">Daily Interest: ${rate}% | ${millionaireMode?'≤100M:2% | ≤300M:3% | ≤400M:4% | above:5%':'≤50k:2% | ≤100k:4% | ≤200k:6% | ≤300k:7% | ≤500k:8.5%'}</span>`
+    );
+  }
+  setUpdateInterval(5000);
+  document.getElementById('bankModal').style.display='flex';
+}
+function applySoundSetting(){soundEnabled=document.getElementById('toggleSound').checked;}
+function applyLangSetting(){langEN=document.getElementById('toggleLang').checked;applyLang();}
+
+function applyUnlimitedSetting(){
+  let checked=document.getElementById('toggleUnlimited').checked;
+  document.getElementById('unlimitedWarning').style.display=checked?'block':'none';
+  if(checked){
+    if(millionaireMode){document.getElementById('toggleMillionaire').checked=false;millionaireMode=false;}
+    unlimitedMode=true;closeModals();
+    setTimeout(()=>{
+      if(confirm(L('Sınırsız Mod açılacak ve oyun sıfırlanacak. Devam et?','Unlimited Mode will reset the game. Continue?'))){
+        document.getElementById('moneyTarget').style.display='none';
+        document.getElementById('day-limit').style.display='none';
+        init();
+      } else {unlimitedMode=false;document.getElementById('toggleUnlimited').checked=false;document.getElementById('unlimitedWarning').style.display='none';}
+    },150);
+  } else {
+    unlimitedMode=false;
+    closeModals();
+    setTimeout(()=>{
+      if(confirm(L('Sınırsız Mod kapatılacak ve oyun normal modda sıfırlanacak. Devam et?',
+                   'Unlimited Mode will be disabled and the game will reset to normal mode. Continue?'))){
+        document.getElementById('moneyTarget').style.display='';
+        document.getElementById('day-limit').style.display='';
+        init();
+      } else {
+        unlimitedMode=true;
+        document.getElementById('toggleUnlimited').checked=true;
+      }
+    },150);
+  }
+}
+
+function applyMillionaireSetting(){
+  let checked=document.getElementById('toggleMillionaire').checked;
+  document.getElementById('millionaireWarning').style.display=checked?'block':'none';
+  if(checked){
+    if(unlimitedMode){document.getElementById('toggleUnlimited').checked=false;unlimitedMode=false;}
+    millionaireMode=true;closeModals();
+    setTimeout(()=>{
+      if(confirm(L('💰 Milyoner Modu açılacak!\n50.000.000₺ başlangıç sermayesi\nHedef: 1.000.000.000₺ / 90 gün\nBanka limiti: 500.000.000₺\n🛍️ Ticaret, 🏠 Gayrimenkul ve 🎲 Şans sekmeleri aktif hale gelir.\n\nOyun sıfırlanacak. Devam et?',
+                   '💰 Millionaire Mode will activate!\n$50,000,000 starting capital\nGoal: $1,000,000,000 / 90 days\nBank limit: $500,000,000\n🛍️ Trade, 🏠 Real Estate and 🎲 Luck tabs will be unlocked.\n\nGame will reset. Continue?'))){
+        document.getElementById('moneyTarget').style.display='';
+        document.getElementById('day-limit').style.display='';
+        init();
+      } else {millionaireMode=false;document.getElementById('toggleMillionaire').checked=false;document.getElementById('millionaireWarning').style.display='none';}
+    },150);
+  } else {
+    millionaireMode=false;
+    closeModals();
+    setTimeout(()=>{
+      if(confirm(L('Milyoner Modu kapatılacak ve oyun normal modda sıfırlanacak. Devam et?',
+                   'Millionaire Mode will be disabled and the game will reset to normal mode. Continue?'))){
+        document.getElementById('moneyTarget').style.display='';
+        document.getElementById('day-limit').style.display='';
+        init();
+      } else {
+        millionaireMode=true;
+        document.getElementById('toggleMillionaire').checked=true;
+      }
+    },150);
+  }
+}
+
+function applyLang(){
+  // Online sayısı — sabit "Online" yazısı, dil değişimi gereksiz
+  // Install banner çevirisi
+  const ibTitle=document.getElementById('ib-title');
+  const ibDesc=document.getElementById('ib-desc');
+  const ibBtn=document.getElementById('ib-btn');
+  if(ibTitle) ibTitle.innerText=L('Ana Ekrana Ekle','Add to Home Screen');
+  if(ibDesc)  ibDesc.innerText=L('Daha hızlı aç, uygulama gibi kullan!','Open faster, use like an app!');
+  if(ibBtn)   ibBtn.innerText=L('Ekle','Add');
+  // iOS modal çevirisi
+  const iosT=document.getElementById('ios-title');
+  const s1=document.getElementById('ios-step1');
+  const s2=document.getElementById('ios-step2');
+  const s3=document.getElementById('ios-step3');
+  const iosC=document.getElementById('ios-close');
+  if(iosT) iosT.innerText=L('📲 Ana Ekrana Ekle','📲 Add to Home Screen');
+  const lClose=document.getElementById('lottery-close-txt');
+  if(lClose) lClose.innerText=L('Kapat','Close');
+  const lNote=document.getElementById('lottery-note');
+  if(lNote) lNote.innerText=L('Sonuç yarın açıklanacak! 🐦','Results announced tomorrow! 🐦');
+  const wClose=document.getElementById('wheel-close-txt');
+  if(wClose) wClose.innerText=L('Kapat','Close');
+  const wBetLbl=document.getElementById('wheel-bet-label');
+  if(wBetLbl) wBetLbl.innerText=L('Yatırmak istediğin miktar:','Amount to bet:');
+  const wInput=document.getElementById('wheelBetInput');
+  if(wInput) wInput.placeholder=L('Miktar ₺','Amount $');
+  const wSpinTxt=document.getElementById('wheel-spin-txt');
+  if(wSpinTxt) wSpinTxt.innerText=L('Çevir!','Spin!');
+  // Feedback modal
+  const fbTitle=document.getElementById('fb-title');
+  const fbDesc=document.getElementById('fb-desc');
+  const fbSend=document.getElementById('fb-send');
+  const fbCancel=document.getElementById('fb-cancel');
+  const fbTxt=document.getElementById('feedbackText');
+  if(fbTitle)  fbTitle.innerText=L('💬 Geri Bildirim','💬 Feedback');
+  if(fbDesc)   fbDesc.innerText=L('Dilek, istek, hata bildirimi — her şeyi yazabilirsin!','Suggestions, requests, bug reports — write anything!');
+  if(fbSend)   fbSend.innerText=L('Gönder','Send');
+  if(fbCancel) fbCancel.innerText=L('İptal','Cancel');
+  if(fbTxt)    fbTxt.placeholder=L('Mesajını buraya yaz...','Write your message here...');
+  if(s1)   s1.innerHTML=L('Alttaki <b>Paylaş</b> butonuna bas <b>⎋</b>','Tap the <b>Share</b> button at the bottom <b>⎋</b>');
+  if(s2)   s2.innerHTML=L('<b>"Ana Ekrana Ekle"</b> seçeneğini seç','Select <b>"Add to Home Screen"</b>');
+  if(s3)   s3.innerHTML=L('Sağ üstteki <b>"Ekle"</b> butonuna bas','Tap <b>"Add"</b> in the top right');
+  if(iosC) iosC.innerText=L('Anladım!','Got it!');
+  document.getElementById('btnNextDay').innerText=L('SONRAKİ GÜNÜ BAŞLAT','NEXT DAY');
+  document.getElementById('btnPortfolio').innerText=L('💼 Varlıklarım','💼 Portfolio');
+  document.getElementById('news-label').innerText=L('📢 YARIN İÇİN BEKLENTİ:','📢 TOMORROW\'S EXPECTATION:');
+  document.getElementById('tab-stocks').innerText=L('📈 Hisse','📈 Stocks');
+  document.getElementById('tab-trade').innerText=L('🛍️ Ticaret','🛍️ Trade');
+  document.getElementById('tab-realestate').innerText=L('🏠 Emlak','🏠 Real Estate');
+  const tluck=document.getElementById('tab-luck');if(tluck)tluck.innerText=L('🎲 Şans','🎰 Luck');
+  if(!unlimitedMode&&!millionaireMode){
+    document.getElementById('moneyTarget').innerText=L(' / 🎯 1.000.000₺',' / 🎯 $1,000,000');
+    document.getElementById('day-limit').innerText=L(' / 60',' / 60');
+  }
+  if(millionaireMode){
+    document.getElementById('moneyTarget').innerText=L(' / 🎯 1.000.000.000₺',' / 🎯 $1,000,000,000');
+    document.getElementById('day-limit').innerText=L(' / 90',' / 90');
+  }
+  // Para birimleri
+  const mc=document.getElementById('moneyCur');const dc=document.getElementById('debtCur');
+  if(mc)mc.innerText=CUR();if(dc)dc.innerText=CUR();
+  // Sınırsız mod uyarısı
+  const uwt=document.getElementById('unlimitedWarnText');
+  if(uwt)uwt.innerText=L('Sınırsız Mod açılırsa oyun sıfırlanır ve yeniden başlar. Süre sınırı ve hedef kaldırılır.','Unlimited Mode will reset the game and restart. Time limit and goal will be removed.');
+  const dd=document.getElementById('debtDisplay');
+  if(dd)dd.childNodes[0].textContent=L('Borç: ','Debt: ');
+  // Banka
+  document.getElementById('bankTitle').innerText=L('🏦 Banka İşlemleri','🏦 Bank');
+  document.getElementById('btnLoan').innerText=L('KREDİ AL','TAKE LOAN');
+  document.getElementById('btnPay').innerText=L('BORÇ ÖDE','PAY DEBT');
+  document.getElementById('btnBankClose').innerText=L('KAPAT','CLOSE');
+  document.getElementById('bankAmount').placeholder=L('Miktar ₺','Amount $');
+  // Portföy
+  document.getElementById('portTitle').innerText=L('💼 Varlık Detayları','💼 Asset Details');
+  document.getElementById('btnPortfolioClose').innerText=L('KAPAT','CLOSE');
+  // Başarımlar
+  document.getElementById('msTitle').innerText=L('🏆 Başarımlar','🏆 Achievements');
+  document.getElementById('btnMsClose').innerText=L('KAPAT','CLOSE');
+  openMS_silent();
+  // Settings
+  document.getElementById('settingsTitle').innerText=L('⚙️ Ayarlar','⚙️ Settings');
+  document.getElementById('btnSettingsClose').innerText=L('KAPAT','CLOSE');
+  document.getElementById('lbl-sound').innerText=L('🔊 Ses','🔊 Sound');
+  document.getElementById('lbl-lang').innerText=L('🌐 Dil / Language','🌐 Language / Dil');
+  document.getElementById('lbl-unlimited').innerText=L('♾️ Sınırsız Mod','♾️ Unlimited Mode');
+  document.getElementById('lbl-millionaire').innerText=L('💰 Milyoner Modu','💰 Millionaire Mode');
+  // Unlocked modal
+  document.getElementById('unlockedHeader').innerText=L('TEBRİKLER!','CONGRATS!');
+  document.getElementById('btnUnlockedOk').innerText=L('HARİKA!','AWESOME!');
+  // Event
+  document.getElementById('btnEventOk').innerText=L('TAMAM','OK');
+  // Mass modal
+  document.getElementById('btnMassCancel').innerText=L('İPTAL','CANCEL');
+  document.getElementById('massQty').placeholder=L('Adet','Quantity');
+  document.getElementById('massConfirmBtn').innerText=L('ONAYLA','CONFIRM');
+  // Grafik kapat
+  document.getElementById('btnChartClose').innerText=L('Kapat','Close');
+  // Rapor
+  document.getElementById('reportHeader').innerText=L('Performans Raporu:','Performance Report:');
+  const restartBtn=document.getElementById('btnRestart');
+  restartBtn.innerText=L('Yeni Oyuna Başla','New Game');
+  restartBtn.style.background='#3498db';
+  restartBtn.onclick=()=>doRestart();
+  // Info
+  document.getElementById('infoTitle').innerText=L('ℹ️ Oyun Rehberi','ℹ️ Game Guide');
+  document.getElementById('infoClose').innerText=L('ANLAŞILDI','GOT IT');
+  document.getElementById('infoContent').innerHTML=langEN
+    ?`<p><b>Welcome, Market Tiger!</b> 📈<br>Turn 50,000₺ into 1 Million₺ within 60 days.</p>
+      <p><b>📈 Stocks:</b> Classic trading. BUY/SELL, chart, long-press for bulk trades.</p>
+      <p><b>🛍️ Trade:</b> Physical goods. Prices fluctuate intraday and between days.</p>
+      <p><b>🏠 Real Estate:</b> Buy properties, earn rent! Prices update every 5 days.</p>
+      <p><b>💰 Millionaire Mode:</b> $50M start, $1B goal, 90 days. Bank limit $500M.</p>
+      <p><b>👾 Crypto Night:</b> Every 10 days — everything goes wild!</p>
+      <p><b>🔥 Events:</b> Random events every 2 days.</p>
+      <p><b>🏆 Achievements:</b> Reach goals, earn cash bonuses.</p>
+      <p><b>⛔ Delisting:</b> Stocks falling to 1₺ are locked from trading.</p>
+      <p><b>🎲 Luck Tab:</b> Only in Millionaire Mode. Buy Lucky Bird tickets and spin the Wheel of Fortune!</p>
+      <p><b>🏭 Companies (v1.5.26):</b> Only in Millionaire Mode. In the Trade tab — establish a company, earn daily fixed income, invest to upgrade and grow!</p>
+      <p><b>♾️ Unlimited Mode:</b> Enable in Settings. No time limit, no goal — play forever!</p>
+      <hr style="border-color:#333;margin:10px 0;">
+      <p style="font-size:11px;color:#888;"><b style="color:#aaa;">⚖️ Privacy & Disclaimers</b><br>
+      This is a game and does not constitute investment advice; it does not teach you anything about real investing. 🎮 All names, company names, and ticker codes in this game are entirely fictional and bear no relation to any real person, institution, or organization. 🔒 This game does not collect any personal data and runs entirely in your browser — no internet connection required. <i>This game was created as a hobby project. 🚀</i></p>
+      <hr style="border-color:#333;margin:10px 0;">
+      <div style="text-align:center;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+        <button onclick="openFeedback()" style="background:#9b59b620;color:#9b59b6;border:1px solid #9b59b640;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">💬 Feedback</button>
+        <button onclick="window.open('https://watchempire.net','_blank')" style="background:#2ecc7120;color:#2ecc71;border:1px solid #2ecc7140;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">⌚ Try Watch Empire!</button>
+        <button onclick="shareGame()" style="background:#3498db20;color:#3498db;border:1px solid #3498db40;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">🔗 Share</button>
+      </div>
+      <div class="made-by">made with 🖤 by mrtrclb<br><span style="font-size:10px;opacity:0.5;">© 2026</span></div>`
+    :`<p><b>Hoş geldin Borsa Kaplanı!</b> 📈<br>60 gün içinde 50.000₺'yi 1 Milyon₺ yapman gerekiyor.</p>
+      <p><b>📈 Hisseler:</b> Tanıdık borsa deneyimi. AL/SAT, grafik, uzun basarak toplu işlem.</p>
+      <p><b>🛍️ Ticaret:</b> Fiziksel ürünler al-sat. Fiyatlar gün içi ve günler arasında değişir.</p>
+      <p><b>🏠 Gayrimenkul:</b> Mülk al, kira kazan! Fiyatlar 5 günde bir güncellenir.</p>
+      <p><b>💰 Milyoner Modu:</b> 50M₺ başlangıç, 1 Milyar₺ hedef, 90 gün!</p>
+      <p><b>👾 Kripto Gecesi:</b> Her 10 günde bir başlar, her şey çıldırır!</p>
+      <p><b>🔥 Sürpriz Olaylar:</b> Her 2 günde bir rastgele olaylar yaşanır.</p>
+      <p><b>🏆 Başarımlar:</b> Belirli hedeflere ulaşınca nakit ödül kazanırsın.</p>
+      <p><b>⛔ Delisting:</b> Fiyatı 1₺'ye düşen hisselerde alım-satım durur.</p>
+      <p><b>🎲 Şans Sekmesi:</b> Sadece Milyoner Modda aktif. Talih Kuşu ve Çarkıfelek ile şansını dene!</p>
+      <p><b>🏭 Şirketler (v1.5.26):</b> Sadece Milyoner Modda. Ticaret sekmesinde firma kur, günlük sabit gelir kazan, yatırım yap ve büyüt!</p>
+      <p><b>♾️ Sınırsız Mod:</b> Ayarlardan açılır. Süre ve hedef yok; sonsuza dek oyna!</p>
+      <hr style="border-color:#333;margin:10px 0;">
+      <p style="font-size:11px;color:#888;"><b style="color:#aaa;">⚖️ Gizlilik & Uyarılar</b><br>
+      Bu bir oyundur ve yatırım tavsiyesi içermez; size herhangi bir yatırım öğretisi sunmaz. 🎮 Oyunda yer alan isimler, şirket adları ve hisse kodları tamamen hayali olup gerçek kişi, kurum veya kuruluşlarla hiçbir ilişkisi yoktur. 🔒 Bu oyun kişisel verilerinizi kaydetmez; internet bağlantısı olmadan doğrudan tarayıcınızda çalışır. <i>Bu oyun bir hobi uğraşısı olarak hayata geçirilmiştir. 🚀</i></p>
+      <hr style="border-color:#333;margin:10px 0;">
+      <p style="font-size:11px;color:#888;"><b style="color:#aaa;">📋 Güncellemeler</b><br>
+      <b style="color:#666;">28.03.2026</b> — v1.5.26: Milyoner moduna 4 yeni firma eklendi (Savunma, Yazılım, Teknoloji, Tekstil); firma yatırım & senaryo sistemi; başarım bonusları 50x; oyun sonu borç/net skor gösterimi.<br>
+      <b style="color:#666;">27.03.2026</b> — Oyunun ilk sürümü yayımlandı.</p>
+      <hr style="border-color:#333;margin:10px 0;">
+      <div style="text-align:center;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+        <button onclick="openFeedback()" style="background:#9b59b620;color:#9b59b6;border:1px solid #9b59b640;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">💬 Geri Bildirim</button>
+        <button onclick="window.open('https://watchempire.net','_blank')" style="background:#2ecc7120;color:#2ecc71;border:1px solid #2ecc7140;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">⌚ Watch Empire'ı Denediniz mi?</button>
+        <button onclick="shareGame()" style="background:#3498db20;color:#3498db;border:1px solid #3498db40;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer;">🔗 Paylaş</button>
+      </div>
+      <div class="made-by">made with 🖤 by mrtrclb<br><span style="font-size:10px;opacity:0.5;">© 2026</span></div>`
+  render();
+}
+
+// ═══════════════════════════════════════════════════════
+// YARDIMCI
+// ═══════════════════════════════════════════════════════
+function closeModals(){document.querySelectorAll('.modal').forEach(m=>m.style.display='none');document.getElementById('portfolioPopup').style.display='none';}
+
+// ═══════════════════════════════════════════════════════
+// ŞANS SEKMESİ
+// ═══════════════════════════════════════════════════════
+function renderLuck(){
+  const panel=document.getElementById('panel-luck');
+  if(!panel)return;
+  const lbl1=L('Şansını bilete yatır! Ertesi gün sonuç açıklanır. Her gün birden fazla bilet alınabilir.','Put your luck in a ticket! Results are announced the next day. Multiple tickets can be bought daily.');
+  const lbl2=L('Şansını çevir! Para yatır, çarkı döndür, anında kazan ya da kaybet.','Spin your luck! Deposit money, spin the wheel, win or lose instantly.');
+  const used=wheelUsedToday;
+  const pending=pendingLottery;
+  panel.innerHTML=`
+    <div class="luck-card">
+      <div class="luck-title">🐦 ${L('Talih Kuşu','Lucky Bird')}</div>
+      <div class="luck-desc">${lbl1}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:12px;color:#666;">💵 3.000${CUR()} / ${L('bilet','ticket')}</span>
+        <button class="luck-btn" onclick="openLottery()" ${pending?'disabled':''}>
+          ${pending ? L('⏳ Yarın açıklanır','⏳ Results tomorrow') : L('🎟️ Bilet Al','🎟️ Buy Ticket')}
+        </button>
+      </div>
+    </div>
+    <div class="luck-card" style="border-left-color:#e74c3c;">
+      <div class="luck-title" style="color:#e74c3c;">🎡 ${L('Çarkıfelek','Wheel of Fortune')}</div>
+      <div class="luck-desc">${lbl2}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:12px;color:#666;">${used?L('✅ Bugün kullanıldı','✅ Used today'):L('Her gün 1 hak','1 spin per day')}</span>
+        <button class="luck-btn" style="background:linear-gradient(135deg,#c0392b,#e74c3c);color:white;" onclick="openWheel()" ${used?'disabled':''}>
+          ${used ? L('✅ Kullanıldı','✅ Used') : L('🎡 Çevir','🎡 Spin')}
+        </button>
+      </div>
+    </div>`;
+}
+
+// ── TALİH KUŞU ──────────────────────────────────────────
+function openLottery(){
+  document.getElementById('lotteryModal').style.display='flex';
+  document.getElementById('lottery-desc').innerText=L(
+    'Her bilet 3.000₺. Sonuç ertesi gün açıklanır. Birden fazla bilet alabilirsin!',
+    'Each ticket costs 3,000₺. Results announced next day. You can buy multiple tickets!'
+  );
+  document.getElementById('lottery-price').innerText='💵 3.000'+CUR()+' / '+L('bilet','ticket');
+  document.getElementById('lottery-buy-txt').innerText=L('Bilet Al','Buy Ticket');
+  document.getElementById('lottery-note').innerText=L('Sonuç yarın açıklanacak! 🐦','Results will be announced tomorrow! 🐦');
+  updateLotteryBought();
+}
+function updateLotteryBought(){
+  document.getElementById('lottery-bought').innerText=L(
+    `Bugün alınan: ${lotteryTicketsBought} bilet`,
+    `Today: ${lotteryTicketsBought} ticket(s)`
+  );
+}
+function buyLotteryTicket(){
+  if(money<3000){alert(L('Yeterli paran yok!','Not enough money!'));return;}
+  money-=3000;
+  totalLuckLost+=3000;
+  lotteryTicketsBought++;
+  pendingLottery=true;
+  updateLotteryBought();
+  SFX.buy();
+  render();
+  // Satın alındı animasyonu
+  const btn=document.getElementById('lottery-buy-btn');
+  const origHtml=btn.innerHTML;
+  btn.textContent='✅ '+L('Alındı!','Bought!');
+  setTimeout(()=>{
+    btn.innerHTML='🎟️ <span id="lottery-buy-txt">'+L('Bir Tane Daha','Buy Another')+'</span>';
+  },1200);
+}
+function resolveLottery(){
+  let total=0;
+  for(let i=0;i<lotteryTicketsBought;i++){
+    const r=Math.random();
+    if(r<0.25)       total+=0;        // %25 hiçbir şey
+    else if(r<0.40)  total+=3000;     // %15 amorti
+    else if(r<0.85)  total+=2000;     // %45 2.000₺
+    else if(r<0.90)  total+=15000;    // %5  15.000₺
+    else if(r<0.95)  total+=30000;    // %5  30.000₺
+    else             total+=50000;    // %5  50.000₺
+  }
+  lotteryTicketsBought=0;
+  return total;
+}
+
+// ── ÇARKIFELEK ──────────────────────────────────────────
+const WHEEL_SEGMENTS=[
+  {labelTR:'5x Para!', labelEN:'5x Money!', color:'#e74c3c', prob:0.07, type:'fivex'},
+  {labelTR:'2x Para!', labelEN:'2x Money!', color:'#f1c40f', prob:0.17, type:'double'},
+  {labelTR:'Amorti',   labelEN:'Break Even',color:'#2ecc71', prob:0.19, type:'even'},
+  {labelTR:'Hiç',      labelEN:'Nothing',   color:'#555',    prob:0.34, type:'nothing'},
+  {labelTR:'-50%',     labelEN:'-50%',      color:'#9b59b6', prob:0.23, type:'half'},
+];
+function getWheelLabel(seg){return langEN?(seg.labelEN||seg.labelTR):seg.labelTR;}
+let wheelSpinning=false;
+let wheelBetAmount=0;
+
+function openWheel(){
+  if(wheelUsedToday){return;}
+  wheelSpinning=false;
+  document.getElementById('wheelModal').style.display='flex';
+  document.getElementById('wheel-result').innerText='';
+  document.getElementById('wheelBetInput').value='';
+  document.getElementById('wheel-spin-btn').disabled=false;
+  document.getElementById('wheel-bet-label').innerText=L('Yatırmak istediğin miktar:','Amount to bet:');
+  document.getElementById('wheel-spin-txt').innerText=L('Çevir!','Spin!');
+  setTimeout(()=>drawWheel(0),50);
+}
+
+function drawWheel(rotation){
+  const canvas=document.getElementById('wheelCanvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  const cx=110,cy=110,r=105;
+  ctx.clearRect(0,0,220,220);
+  let startAngle=rotation;
+  WHEEL_SEGMENTS.forEach(seg=>{
+    const arc=seg.prob*2*Math.PI;
+    ctx.beginPath();ctx.moveTo(cx,cy);
+    ctx.arc(cx,cy,r,startAngle,startAngle+arc);
+    ctx.closePath();ctx.fillStyle=seg.color;ctx.fill();
+    ctx.strokeStyle='#111';ctx.lineWidth=2;ctx.stroke();
+    // Yazı
+    ctx.save();ctx.translate(cx,cy);ctx.rotate(startAngle+arc/2);
+    ctx.textAlign='right';ctx.fillStyle='#fff';ctx.font='bold 11px sans-serif';
+    ctx.fillText(getWheelLabel(seg),r-8,4);ctx.restore();
+    startAngle+=arc;
+  });
+}
+
+function spinWheel(){
+  if(wheelSpinning||wheelUsedToday)return;
+  const inputEl=document.getElementById('wheelBetInput');
+  if(!inputEl){console.warn('wheelBetInput bulunamadı');return;}
+  const rawVal=(inputEl.value||'').toString().replace(/[^0-9]/g,'');
+  const bet=parseInt(rawVal)||0;
+  console.log('spinWheel bet:', bet, 'money:', money);
+  if(bet<1000){
+    document.getElementById('wheel-result').style.color='#e74c3c';
+    document.getElementById('wheel-result').innerText=L('En az 1.000₺ gir!','Enter at least 1,000₺!');
+    return;
+  }
+  if(bet>money){
+    document.getElementById('wheel-result').style.color='#e74c3c';
+    document.getElementById('wheel-result').innerText=L('Yeterli paran yok!','Not enough money!');
+    return;
+  }
+  wheelBetAmount=bet;
+  money-=bet;
+  totalLuckLost+=bet;
+  wheelSpinning=true;
+  wheelUsedToday=true;
+  document.getElementById('wheel-spin-btn').disabled=true;
+  document.getElementById('wheel-result').innerText='';
+  // Çark animasyonu
+  const totalRotation=Math.PI*2*8+Math.random()*Math.PI*2; // 8 tam tur + rastgele
+  const duration=3000;
+  const start=performance.now();
+  function animate(now){
+    const elapsed=now-start;
+    const progress=Math.min(elapsed/duration,1);
+    const ease=1-Math.pow(1-progress,3);
+    drawWheel(ease*totalRotation);
+    if(progress<1){requestAnimationFrame(animate);}
+    else{
+      // Sonuç belirle
+      const finalAngle=((totalRotation%(Math.PI*2))+Math.PI*2)%(Math.PI*2);
+      // Hangi dilime denk geldi
+      let cumProb=0, result=null;
+      const r=Math.random();
+      for(const seg of WHEEL_SEGMENTS){cumProb+=seg.prob;if(r<cumProb){result=seg;break;}}
+      if(!result)result=WHEEL_SEGMENTS[WHEEL_SEGMENTS.length-1];
+      // Kazancı hesapla
+      let gain=0;
+      if(result.type==='fivex')        gain=bet*5;
+      else if(result.type==='double') gain=bet*2;
+      else if(result.type==='even')   gain=bet;
+      else if(result.type==='half')   gain=0;
+      else                            gain=0;
+      // half: bet zaten kesildi, bir de yarısını daha kes
+      if(result.type==='half'){
+        const extra=Math.floor(bet*0.5);
+        money-=extra;
+        totalLuckLost+=extra;
+      }
+      money+=gain;
+      if(gain>0)totalLuckGain+=gain;
+      render();
+      renderLuck();
+      SFX.milestone();
+      const resEl=document.getElementById('wheel-result');
+      if(result.type==='even'){
+        resEl.style.color='#f39c12';
+        resEl.innerText=L(`😐 Amorti! ${fmt(bet)}₺ geri döndü.`,`😐 Break Even! $${fmt(bet)} returned.`);
+      } else if(result.type==='half'){
+        const totalLoss=bet+Math.floor(bet*0.5);
+        resEl.style.color='#e74c3c';
+        resEl.innerText=L(`😢 -50%! Toplam ${fmt(totalLoss)}₺ kaybettin.`,`😢 -50%! Lost $${fmt(totalLoss)} in total.`);
+      } else if(gain>0){
+        resEl.style.color='#2ecc71';
+        resEl.innerText=L(`🎉 ${getWheelLabel(result)} — ${fmt(gain)}₺ kazandın!`,`🎉 ${getWheelLabel(result)} — Won $${fmt(gain)}!`);
+      } else {
+        resEl.style.color='#e74c3c';
+        resEl.innerText=L(`😢 Şanssız! ${fmt(bet)}₺ kaybettin.`,`😢 Unlucky! Lost $${fmt(bet)}.`);
+      }
+      wheelSpinning=false;
+      saveGame();
+    }
+  }
+  requestAnimationFrame(animate);
+}
+
+function shareGame(){
+  const url='https://trade001.netlify.app';
+  const text=L('Trade Game oynuyorum! Sen de dene: ',"I'm playing Trade Game! Try it: ");
+  if(navigator.share){
+    navigator.share({title:'Trade Game',text:text,url:url}).catch(()=>{});
+  } else {
+    navigator.clipboard.writeText(url).then(()=>{
+      alert(L('Link kopyalandı! 📋','Link copied! 📋'));
+    }).catch(()=>{
+      prompt(L('Linki kopyala:','Copy the link:'),url);
+    });
+  }
+}
+
+function openFeedback(){
+  closeModals();
+  document.getElementById('feedbackText').value='';
+  // Aylık limit kontrolü — açılırken göster
+  const fbKey='tgFeedbackSent';
+  const statusEl=document.getElementById('fb-status');
+  try{
+    const lastSent=localStorage.getItem(fbKey);
+    if(lastSent){
+      const diff=Date.now()-parseInt(lastSent);
+      if(diff<30*24*60*60*1000){
+        const days=Math.ceil((30*24*60*60*1000-diff)/(24*60*60*1000));
+        statusEl.style.color='#e67e22';
+        statusEl.innerText=L(`Bu ay zaten geri bildirim gönderdin. ${days} gün sonra tekrar gönderebilirsin.`,`You already sent feedback this month. Try again in ${days} days.`);
+        document.getElementById('fb-send').disabled=true;
+      } else {
+        statusEl.innerText='';
+        document.getElementById('fb-send').disabled=false;
+      }
+    } else {
+      statusEl.innerText='';
+      document.getElementById('fb-send').disabled=false;
+    }
+  }catch(e){statusEl.innerText='';}
+  document.getElementById('feedbackModal').style.display='flex';
+}
+
+async function sendFeedback(){
+  const text=document.getElementById('feedbackText').value.trim();
+  const status=document.getElementById('fb-status');
+  if(!text){status.style.color='#e74c3c';status.innerText=L('Lütfen bir şeyler yaz!','Please write something!');return;}
+  // Aylık 1 kez sınırı
+  const fbKey='tgFeedbackSent';
+  try{
+    const lastSent=localStorage.getItem(fbKey);
+    if(lastSent){
+      const diff=Date.now()-parseInt(lastSent);
+      const days=Math.ceil((30*24*60*60*1000-diff)/(24*60*60*1000));
+      if(diff<30*24*60*60*1000){
+        status.style.color='#e67e22';
+        status.innerText=L(`Bu ay zaten geri bildirim gönderdin. ${days} gün sonra tekrar gönderebilirsin.`,`You already sent feedback this month. Try again in ${days} days.`);
+        return;
+      }
+    }
+  }catch(e){}
+  const sendBtn=document.getElementById('fb-send');
+  sendBtn.disabled=true;
+  status.style.color='#aaa';
+  status.innerText=L('Gönderiliyor...','Sending...');
+  try{
+    if(typeof window.fbSendFeedback!=='function') throw new Error('fbSendFeedback hazır değil');
+    await window.fbSendFeedback({
+      player:playerName||'Anonim',
+      msg:text,
+      day:day||0,
+      mode:millionaireMode?'Milyoner':unlimitedMode?'Sınırsız':'Normal'
+    });
+    try{localStorage.setItem(fbKey,Date.now().toString());}catch(e){}
+    status.style.color='#2ecc71';
+    status.innerText=L('Teşekkürler! Mesajın iletildi 🙏','Thanks! Your message was sent 🙏');
+    setTimeout(()=>closeModals(),2000);
+  }catch(e){
+    status.style.color='#e74c3c';
+    status.innerText=L('Gönderilemedi, internet bağlantısını kontrol et.','Could not send, check your connection.');
+  }finally{
+    sendBtn.disabled=false;
+  }
+}
+
+async function openLeaderboard(){
+  document.getElementById('leaderboardModal').style.display='flex';
+  const lbTitleEl=document.getElementById('lb-title-txt');
+  if(lbTitleEl) lbTitleEl.innerText=L('En İyi Skorlarım','My Best Scores');
+  const list=document.getElementById('leaderboardList');
+  list.innerHTML='<div style="text-align:center;color:#555;padding:20px;">'+L('Yükleniyor...','Loading...')+'</div>';
+  
+  if(!navigator.onLine){
+    list.innerHTML='<div style="text-align:center;color:#555;padding:20px;">'+L('İnternet bağlantısı yok 📡','No internet connection 📡')+'</div>';
+    return;
+  }
+  
+  try{
+    const rows=await window.fbGetLeaderboard();
+    if(!rows||rows.length===0){
+      list.innerHTML='<div style="text-align:center;color:#555;padding:20px;">'+L('Henüz skorun yok. Oyna ve ilk sıraya gir! 🚀','No scores yet. Play and get to the top! 🚀')+'</div>';
+      return;
+    }
+    const medals=['🥇','🥈','🥉'];
+    list.innerHTML=rows.map((r,i)=>{
+      const rank=medals[i]||(i+1)+'.';
+      const score=Math.floor(r.money||0).toLocaleString('tr-TR');
+      const mode=r.mode||'Normal';
+      const day=r.day||'-';
+      return `<div class="lb-row">
+        <div class="lb-rank">${rank}</div>
+        <div class="lb-info">
+          <div class="lb-name">${r.name||'Trader'}</div>
+          <div class="lb-detail">${day}. ${L('gün','day')} &nbsp;·&nbsp; ${mode}</div>
+        </div>
+        <div class="lb-score">${score}${CUR()}</div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    list.innerHTML='<div style="text-align:center;color:#e74c3c;padding:20px;">'+L('Yüklenemedi 😕','Failed to load 😕')+'</div>';
+  }
+}
+function confirmRestart(){
+  if(liveInterval)clearInterval(liveInterval);
+  stopAutoDayTimer();
+  // Skoru gönder
+  if(day>1 && money>0 && typeof window.fbSubmitScore==='function'){
+    const mode=millionaireMode?'💰 Milyoner':unlimitedMode?'♾️ Sınırsız':'Normal';
+    const snapMoney=Math.floor(money);const snapDay=day;const snapName=playerName;
+    setTimeout(()=>window.fbSubmitScore({name:snapName,money:snapMoney,day:snapDay,mode}),100);
+  }
+  // Özet tabloyu doldur ve göster
+  document.getElementById('resultText').innerText=L('🔄 Oyundan Çıkılıyor','🔄 Leaving Game');
+  document.getElementById('resultSub').innerText=L(`${day}. günde bırakıldı — toplam özet:`,`Left on day ${day} — summary:`);
+  // Tablo doldur
+  let tHtml=`<tr><th>${L('Varlık','Asset')}</th><th>${L('Toplam Kâr','Total P&L')}</th></tr>`;
+  tHtml+=`<tr><td colspan="2" style="color:#3498db;padding-top:6px">📈 ${L('Hisseler','Stocks')}</td></tr>`;
+  [...products].sort((a,b)=>b.totalProfit-a.totalProfit).forEach(p=>{let cls=p.totalProfit>0?'pos':p.totalProfit<0?'neg':'';tHtml+=`<tr><td>${p.name}</td><td class="${cls}">${fmt(p.totalProfit)}${CUR()}</td></tr>`;});
+  if(millionaireMode){
+    tHtml+=`<tr><td colspan="2" style="color:#e67e22;padding-top:6px">🛍️ ${L('Ticaret','Trade')}</td></tr>`;
+    [...tradeItems].filter(t=>t.totalProfit!==0).sort((a,b)=>b.totalProfit-a.totalProfit).forEach(t=>{let name=langEN?(t.nameEN||t.nameTR):t.nameTR;let cls=t.totalProfit>0?'pos':t.totalProfit<0?'neg':'';tHtml+=`<tr><td>${name}</td><td class="${cls}">${fmt(t.totalProfit)}${CUR()}</td></tr>`;});
+    tHtml+=`<tr><td colspan="2" style="color:#2ecc71;padding-top:6px">🏠 ${L('Gayrimenkul','Real Estate')}</td></tr>`;
+    [...realEstateItems].filter(r=>r.totalProfit!==0).sort((a,b)=>b.totalProfit-a.totalProfit).forEach(r=>{let name=langEN?(r.nameEN||r.nameTR):r.nameTR;let cls=r.totalProfit>0?'pos':r.totalProfit<0?'neg':'';tHtml+=`<tr><td>${name}</td><td class="${cls}">${fmt(r.totalProfit)}${CUR()}</td></tr>`;});
+  }
+  document.getElementById('reportTable').innerHTML=tHtml;
+  document.getElementById('financeSummary').innerHTML=`
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Ödenen Faiz:','Interest Paid:')}</span><span class="neg">-${fmt(totalInterestPaid)}${CUR()}</span></div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Toplam Kira Geliri:','Total Rent Earned:')}</span><span class="pos">+${fmt(totalRentEarned)}${CUR()}</span></div>
+    ${millionaireMode?`<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Şans Kazancı:','Luck Won:')}</span><span class="pos">+${fmt(totalLuckGain)}${CUR()}</span></div><div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Şansa Harcanan:','Luck Spent:')}</span><span class="neg">-${fmt(totalLuckLost)}${CUR()}</span></div>`:''}
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('En Yüksek Nakit:','Peak Cash:')}</span><span class="pos">${fmt(peakCash)}${CUR()}</span></div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>${L('Toplam İşlem Sayısı:','Total Trades:')}</span><span>${totalTrades} ${L('işlem','trades')}</span></div>
+    ${debt>0?`<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:#e74c3c">${L('Toplam Borç:','Total Debt:')}</span><span class="neg">-${fmt(debt)}${CUR()}</span></div>`:''}
+    <div style="display:flex;justify-content:space-between;margin-top:6px;font-weight:bold;border-top:1px solid #333;padding-top:6px"><span>${L('Final Nakit:','Final Cash:')}</span><span style="color:#3498db">${fmt(money)}${CUR()}</span></div>
+    ${debt>0?`<div style="display:flex;justify-content:space-between;margin-top:4px;font-weight:bold"><span>${L('🏆 Net Skor:','🏆 Net Score:')}</span><span style="color:${money-debt>=0?'#2ecc71':'#e74c3c'}">${fmt(money-debt)}${CUR()}</span></div>`:''}`;
+  // Butonu "Kapat" yap
+  const btn=document.getElementById('btnRestart');
+  btn.innerText=L('KAPAT','CLOSE');
+  btn.style.background='#444';
+  btn.onclick=()=>doRestart();
+  document.getElementById('overlay').style.display='flex';
+}
+
+function doRestart(){
+  // doRestart: overlay'den splash'a dön
+  millionaireMode=false;unlimitedMode=false;
+  document.getElementById('toggleMillionaire').checked=false;
+  document.getElementById('toggleUnlimited').checked=false;
+  document.getElementById('splashScreen').style.display='flex';
+  document.getElementById('overlay').style.display='none';
+  document.body.style.paddingBottom='';
+  initSplash();
+}
+
+// ═══════════════════════════════════════════════════════
+// KAYIT / YÜKLEME (localStorage)
+// ═══════════════════════════════════════════════════════
+function saveGame(){
+  try{
+    const state={
+      v:3, // versiyon — uyumsuz kayıt önleme
+      playerName,money,day,totalDays,targetMoney,bankLimit,
+      debt,totalInterestPaid,totalTrades,totalRentEarned,totalTradeProfit,totalRealEstateProfit,peakCash,
+      unlimitedMode,millionaireMode,langEN,soundEnabled,totalLuckGain,totalLuckLost,
+      products:products.map(p=>({stock:p.stock,avg:p.avg,price:p.price,history:p.history,delisted:p.delisted||false,totalProfit:p.totalProfit,hasNews:p.hasNews||false})),
+      tradeItems:tradeItems.map(t=>({stock:t.stock,avg:t.avg,price:t.price,history:t.history,totalProfit:t.totalProfit})),
+      realEstateItems:realEstateItems.map(r=>({stock:r.stock,avg:r.avg,price:r.price,history:r.history,totalProfit:r.totalProfit,priceTimer:r.priceTimer})),
+      milestones:milestones.map(m=>m.unlocked),
+      firms:FIRMS.map(f=>({owned:f.owned,purchaseCost:f.purchaseCost,investLevel:f.investLevel,usedScenarios:f.usedScenarios||[]})),
+      pendingLottery,lotteryTicketsBought,wheelUsedToday,
+    };
+    localStorage.setItem('tgSave', JSON.stringify(state));
+  }catch(e){console.warn('Kayıt başarısız:',e);}
+}
+
+function hasSave(){
+  try{
+    const raw=localStorage.getItem('tgSave');
+    if(!raw)return false;
+    const s=JSON.parse(raw);
+    return s && s.v===3 && s.day>=1;
+  }catch(e){return false;}
+}
+
+function getSaveInfo(){
+  try{
+    const s=JSON.parse(localStorage.getItem('tgSave'));
+    return {name:s.playerName||'Trader', day:s.day, money:s.money, mode:s.millionaireMode?'💰 Milyoner':s.unlimitedMode?'♾️ Sınırsız':'Normal'};
+  }catch(e){return null;}
+}
+
+function loadGame(){
+  try{
+    const s=JSON.parse(localStorage.getItem('tgSave'));
+    if(!s||s.v!==3)return false;
+    // Global değişkenleri yükle
+    playerName=sanitizeName(s.playerName||'Trader');
+    money=s.money; day=s.day; totalDays=s.totalDays; targetMoney=s.targetMoney; bankLimit=s.bankLimit;
+    debt=s.debt; totalInterestPaid=s.totalInterestPaid; totalTrades=s.totalTrades||0;
+    totalRentEarned=s.totalRentEarned||0; totalTradeProfit=s.totalTradeProfit||0;
+    totalLuckGain=s.totalLuckGain||0; totalLuckLost=s.totalLuckLost||0;
+    totalRealEstateProfit=s.totalRealEstateProfit||0; peakCash=s.peakCash||money;
+    unlimitedMode=s.unlimitedMode||false; millionaireMode=s.millionaireMode||false;
+    langEN=s.langEN||false; soundEnabled=s.soundEnabled!==false;
+    isBorsaHoliday=false; isCryptoNight=false; rentQueue=[];
+    // Ürünleri yükle
+    s.products.forEach((p,i)=>{if(products[i]){products[i].stock=p.stock;products[i].avg=p.avg;products[i].price=p.price;products[i].history=p.history;products[i].lastPrice=p.price;products[i].delisted=p.delisted||false;products[i].totalProfit=p.totalProfit||0;products[i].hasNews=p.hasNews||false;}});
+    s.tradeItems.forEach((t,i)=>{if(tradeItems[i]){tradeItems[i].stock=t.stock;tradeItems[i].avg=t.avg;tradeItems[i].price=t.price;tradeItems[i].history=t.history;tradeItems[i].lastPrice=t.price;tradeItems[i].totalProfit=t.totalProfit||0;}});
+    s.realEstateItems.forEach((r,i)=>{if(realEstateItems[i]){realEstateItems[i].stock=r.stock;realEstateItems[i].avg=r.avg;realEstateItems[i].price=r.price;realEstateItems[i].history=r.history;realEstateItems[i].lastPrice=r.price;realEstateItems[i].totalProfit=r.totalProfit||0;realEstateItems[i].priceTimer=r.priceTimer||0;}});
+    s.milestones.forEach((u,i)=>{if(milestones[i])milestones[i].unlocked=u;});
+    if(s.firms)s.firms.forEach((f,i)=>{if(FIRMS[i]){FIRMS[i].owned=f.owned||false;FIRMS[i].purchaseCost=f.purchaseCost||FIRMS[i].baseCost;FIRMS[i].investLevel=f.investLevel||0;FIRMS[i].usedScenarios=f.usedScenarios||[];}});
+    else FIRMS.forEach(f=>{f.owned=false;f.purchaseCost=f.baseCost;f.investLevel=0;f.usedScenarios=[];});
+    pendingLottery=s.pendingLottery||false; lotteryTicketsBought=s.lotteryTicketsBought||0; wheelUsedToday=s.wheelUsedToday||false;
+    return true;
+  }catch(e){console.warn('Yükleme başarısız:',e);return false;}
+}
+
+function continueGame(){
+  if(!loadGame())return;
+  // UI ayarla
+  document.getElementById('playerDisplay').innerText=playerName;
+  document.getElementById('toggleSound').checked=soundEnabled;
+  document.getElementById('toggleLang').checked=langEN;
+  document.getElementById('toggleMillionaire').checked=millionaireMode;
+  document.getElementById('toggleUnlimited').checked=unlimitedMode;
+  if(millionaireMode){
+    document.body.classList.add('millionaire-mode');
+    document.getElementById('moneyTarget').innerText=L(' / 🎯 1.000.000.000₺',' / 🎯 $1,000,000,000');
+    document.getElementById('day-limit').innerText=L(' / 90',' / 90');
+    document.getElementById('tabBar').style.display='flex';
+    document.getElementById('panel-trade').style.display='none';
+    document.getElementById('panel-realestate').style.display='none';
+    switchTab('stocks');
+  } else {
+    document.body.classList.remove('millionaire-mode');
+    document.getElementById('tabBar').style.display='none';
+    document.getElementById('panel-stocks').style.display='';
+    document.getElementById('news-box').style.display='';
+    currentTab='stocks';
+    if(!unlimitedMode){
+      document.getElementById('moneyTarget').style.display='';
+      document.getElementById('day-limit').style.display='';
+      document.getElementById('moneyTarget').innerText=L(' / 🎯 1.000.000₺',' / 🎯 $1,000,000');
+      document.getElementById('day-limit').innerText=L(' / 60',' / 60');
+    } else {
+      document.getElementById('moneyTarget').style.display='none';
+      document.getElementById('day-limit').style.display='none';
+    }
+  }
+  document.getElementById('splashScreen').style.display='none';
+  document.getElementById('overlay').style.display='none';
+  document.getElementById('portfolioPopup').style.display='none';
+  document.body.classList.remove('crypto-night');
+  document.getElementById('mainTitle').innerText='TRADE GAME';
+  setUpdateInterval(5000);
+  generateNews(); render();
+  document.body.style.paddingBottom='70px';
+  if(langEN)applyLang();
+}
+
+// ═══════════════════════════════════════════════════════
+// SPLASH BAŞLANGIÇ — kayıt varsa devam butonu göster
+// ═══════════════════════════════════════════════════════
+function initSplash(){
+  const btn=document.getElementById('splashButtons');
+  console.log('initSplash — kayıt var mı:', hasSave(), '| localStorage:', localStorage.getItem('tgSave')?.substring(0,50));
+  if(hasSave()){
+    const info=getSaveInfo();
+    const modeLabel=info.mode==='💰 Milyoner'?'💰 Milyoner':info.mode==='♾️ Sınırsız'?'♾️ Sınırsız':'Normal';
+    btn.innerHTML=`
+      <button class="btn-continue" onclick="continueGame()">⏵ DEVAM ET</button>
+      <div class="save-badge">
+        <span>👤 <b>${info.name}</b></span>
+        <span>📅 <b>${info.day}. gün</b></span>
+        <span>💰 <b>${Math.floor(info.money).toLocaleString('tr-TR')}₺</b></span>
+        <span>${modeLabel}</span>
+      </div>
+      <hr class="splash-divider">
+      <button class="btn-newgame" onclick="showNamePopup()">▶ Yeni Oyun</button>
+      <button class="btn-newgame" onclick="openLeaderboard()" style="margin-top:6px;border-color:#f1c40f33;color:#f1c40f88;">🏆 En İyi Skorlarım</button>`;
+  } else {
+    btn.innerHTML=`
+      <button class="btn-continue" onclick="showNamePopup()" style="background:linear-gradient(135deg,#2980b9,#3498db);">▶ OYUNA BAŞLA</button>
+      <button class="btn-newgame" onclick="openLeaderboard()" style="margin-top:10px;border-color:#f1c40f33;color:#f1c40f88;">🏆 En İyi Skorlarım</button>`;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ANA EKRANA EKLE
+// ═══════════════════════════════════════════════════════
+let deferredInstallPrompt=null;
+
+function isInStandaloneMode(){
+  return window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone===true;
+}
+function isIOS(){
+  return /iphone|ipad|ipod/i.test(navigator.userAgent);
+}
+function isAndroid(){
+  return /android/i.test(navigator.userAgent);
+}
+function installDismissed(){
+  return localStorage.getItem('tgInstallDismissed')==='1';
+}
+function dismissInstall(){
+  localStorage.setItem('tgInstallDismissed','1');
+  document.getElementById('installBanner').style.display='none';
+}
+function doInstall(){
+  if(deferredInstallPrompt){
+    deferredInstallPrompt.prompt();
+    deferredInstallPrompt.userChoice.then(r=>{
+      if(r.outcome==='accepted') dismissInstall();
+      deferredInstallPrompt=null;
+    });
+  } else if(isIOS()){
+    document.getElementById('iosInstallModal').style.display='flex';
+  }
+}
+function showInstallBanner(){
+  if(isInStandaloneMode()||installDismissed())return;
+  if(!isIOS()&&!isAndroid())return; // sadece mobilde göster
+  document.getElementById('installBanner').style.display='flex';
+}
+
+// Android: tarayıcının install prompt'unu yakala
+window.addEventListener('beforeinstallprompt',e=>{
+  e.preventDefault();
+  deferredInstallPrompt=e;
+  showInstallBanner();
+});
+
+// iOS: Safari'de manuel talimat göster
+window.addEventListener('load',()=>{
+  if(isIOS()&&!isInStandaloneMode()&&!installDismissed()){
+    setTimeout(showInstallBanner, 3000); // 3 sn sonra göster
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// PWA — Service Worker & Manifest (inline)
+// ═══════════════════════════════════════════════════════
+(function setupPWA(){
+  // Manifest — blob olarak oluştur
+  const manifest={
+    name:'Trade Game',short_name:'TradeGame',
+    start_url:'.',display:'standalone',
+    background_color:'#111111',theme_color:'#3498db',
+    description:'Borsa simülasyon oyunu',
+    icons:[
+      {src:'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2215%22 fill=%22%23111%22/><text y=%22.9em%22 font-size=%2280%22>📈</text></svg>',sizes:'any',type:'image/svg+xml'}
+    ]
+  };
+  const blob=new Blob([JSON.stringify(manifest)],{type:'application/json'});
+  document.getElementById('manifestLink').href=URL.createObjectURL(blob);
+
+  // Service Worker — gerçek sw.js dosyasına kayıt
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('./sw.js', {scope:'./'})
+      .then(()=>console.log('SW: Offline desteği aktif ✅'))
+      .catch(()=>console.log('SW: sw.js bulunamadı, offline desteği yok.'));
+  }
+})();
+
+// Sayfa yüklendiğinde splash'ı hazırla
+window.addEventListener('DOMContentLoaded',()=>initSplash());
+
+// iPhone: arka plandan dönünce splash'ı yenile
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'){
+    // Oyun aktif değilse (splash görünüyorsa) initSplash çağır
+    const splash=document.getElementById('splashScreen');
+    if(splash && splash.style.display!=='none'){
+      initSplash();
+    }
+  }
+});
+
+// iOS Safari: pageshow eventi (back/forward cache'den dönüş)
+window.addEventListener('pageshow',(e)=>{
+  if(e.persisted){
+    // Sayfa cache'den yüklendi — splash'ı yenile
+    const splash=document.getElementById('splashScreen');
+    if(splash && splash.style.display!=='none'){
+      initSplash();
+    }
+  }
+});
+</script>
+</body>
+</html>
