@@ -1389,18 +1389,14 @@ function init(){
     // Milyoner modda trade/re panellerini başlat
     document.getElementById('panel-trade').style.display='none';
     document.getElementById('panel-realestate').style.display='none';
-    document.getElementById('panel-luck').style.display='none';
     switchTab('stocks');
   } else {
     money=50000; totalDays=unlimitedMode?9999:60; targetMoney=1000000; bankLimit=500000;
     document.body.classList.remove('millionaire-mode');
-    document.getElementById('tabBar').style.display='none';
-    // Normal modda trade/re panellerini gizle, stocks aktif ve görünür
-    document.getElementById('panel-trade').style.display='none';
-    document.getElementById('panel-realestate').style.display='none';
+    document.getElementById('tabBar').style.display='flex';
     document.getElementById('panel-stocks').style.display='';
     document.getElementById('news-box').style.display='';
-    currentTab='stocks';
+    switchTab('stocks');
     if(!unlimitedMode){
       document.getElementById('moneyTarget').style.display='';
       document.getElementById('day-limit').style.display='';
@@ -2999,10 +2995,10 @@ async function loadFromCloud(){
         switchTab('stocks');
       } else {
         document.body.classList.remove('millionaire-mode');
-        document.getElementById('tabBar').style.display='none';
+        document.getElementById('tabBar').style.display='flex';
         document.getElementById('panel-stocks').style.display='';
         document.getElementById('news-box').style.display='';
-        currentTab='stocks';
+        switchTab('stocks');
         if(!unlimitedMode){
           document.getElementById('moneyTarget').style.display='';
           document.getElementById('day-limit').style.display='';
@@ -3073,10 +3069,10 @@ function continueGame(){
     switchTab('stocks');
   } else {
     document.body.classList.remove('millionaire-mode');
-    document.getElementById('tabBar').style.display='none';
+    document.getElementById('tabBar').style.display='flex';
     document.getElementById('panel-stocks').style.display='';
     document.getElementById('news-box').style.display='';
-    currentTab='stocks';
+    switchTab('stocks');
     if(!unlimitedMode){
       document.getElementById('moneyTarget').style.display='';
       document.getElementById('day-limit').style.display='';
